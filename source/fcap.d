@@ -155,7 +155,7 @@ class DAQDevice (Specs...)
 		const @property {/*counters}*/
 			Index current_sample_count ()
 				{/*...}*/
-					return 1;
+					return 1;// TODO
 				}
 			Seconds current_recording_length ()
 				{/*...}*/
@@ -185,7 +185,10 @@ class DAQDevice (Specs...)
 				}
 
 			Seconds max_recording_length () const // REVIEW
-				{/*...}*/
+				out (result) {/*...}*/
+					assert (result >= min_recording_length);
+				}
+				body {/*...}*/
 					return buffer_size (in_samples) / sampling_frequency;
 				}
 			void max_recording_length (Seconds time) // REVIEW
@@ -193,6 +196,18 @@ class DAQDevice (Specs...)
 					min_recording_time = time;
 
 					invalidate_parameters;
+				}
+
+			Interval!Volts input_voltage () const
+				{/*...}*/
+					return input_voltage_range;
+				}
+			void input_voltage (Interval!Volts range)
+				in {/*...}*/
+					assert (range.contained_in (MaxVoltageRange ()));
+				}
+				body {/*...}*/
+					input_voltage_range = range;
 				}
 		}
 		public:
@@ -241,6 +256,11 @@ class DAQDevice (Specs...)
 							return channel_string[0..$-2];
 						}
 
+					if (this.is_recording)
+						stop;
+
+					validate_parameters;
+
 					DAQmx.CreateTask (``, &task_handle);
 
 					DAQmx.CreateAIVoltageChan (task_handle, 
@@ -273,8 +293,6 @@ class DAQDevice (Specs...)
 								channel.offset = offset++;
 								channel.stride = stride;
 							}
-
-					validate_parameters;
 				}
 		}
 		public {/*channels}*/
@@ -285,6 +303,8 @@ class DAQDevice (Specs...)
 					}
 					body {/*...}*/
 						input_channels[i].open = true;
+
+						invalidate_parameters;
 					}
 
 				void close_input_channel (Index i)
@@ -293,28 +313,38 @@ class DAQDevice (Specs...)
 					}
 					body {/*...}*/
 						input_channels[i].open = false;
+
+						invalidate_parameters;
 					}
 
 				void open_input_channels (Index[] indices...)
 					{/*...}*/
 						foreach (i; indices)
 							open_input_channel (i);
+
+						invalidate_parameters;
 					}
 				void open_input_channels ()
 					{/*...}*/
 						foreach (i; 0..InputChannels.count)
 							open_input_channel (i);
+
+						invalidate_parameters;
 					}
 
 				void close_input_channels (Index[] indices...)
 					{/*...}*/
 						foreach (i; indices)
 							close_input_channel (i);
+
+						invalidate_parameters;
 					}
 				void close_input_channels ()
 					{/*...}*/
 						foreach (i; 0..InputChannels.count)
 							close_input_channel (i);
+
+						invalidate_parameters;
 					}
 			}
 			const {/*access}*/
@@ -425,6 +455,7 @@ class DAQDevice (Specs...)
 						double* buffer;
 						const size_t capacity;
 						size_t position;
+						bool filled; // TODO length?
 
 						this (size_t size)
 							{/*...}*/
@@ -447,12 +478,20 @@ class DAQDevice (Specs...)
 						void advance (size_t positions)
 							{/*...}*/
 								position += positions;
+
+								if (not (filled) && position >= capacity)
+									filled = true;
+
 								position %= capacity;
 							}
 
 						bool is_ready () const
 							{/*...}*/
 								return buffer !is null;
+							}
+						size_t length () const
+							{/*...}*/
+								return filled? capacity: position;
 							}
 
 						invariant(){/*...}*/
@@ -498,7 +537,11 @@ class DAQDevice (Specs...)
 		private {/*parameter validation}*/
 			void validate_parameters ()
 				{/*...}*/
-					parameters_invalidated = false;
+					if (sampling_frequency * open_channels_count <= MaxSamplingRate ()
+						&& max_recording_length >= min_recording_length
+						&& input_range.contained_in (MaxVoltageRange ())
+					) parameters_invalidated = false;
+					else assert (0, `invalid parameters`); // REVIEW
 				}
 			void invalidate_parameters ()
 				{/*...}*/
@@ -531,6 +574,9 @@ class DAQDevice (Specs...)
 
 			enum in_samples = 1;
 			alias in_doubles = open_channels_count;
+		}
+		invariant (){/*}*/
+			assert (block_size (in_samples) * read_frequency == buffer_size (in_samples)); // TODO
 		}
 	}
 	public {/*Specs}*/
