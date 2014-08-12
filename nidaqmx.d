@@ -817,7 +817,7 @@ struct DAQmx
 			extern (C) int function (char* errorString, uint bufferSize) DAQmxBaseGetExtendedErrorInfo;
 		}
 		private {/*NI-DAQmxBase Specific Attribute Get/Set/Reset Function Declarations}*/
-			extern (C) int DAQmxBaseGetDevSerialNum(const char* device, uint* data);
+			extern (C) int function (const char* device, uint* data) DAQmxBaseGetDevSerialNum;
 		}
 
 		version (NO_DAQ) {}
