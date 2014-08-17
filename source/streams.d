@@ -19,6 +19,9 @@ private {/*import evx}*/
 
 	import evx.algebra:
 		zero, unity;
+
+	import evx.analysis:
+		Continuous;
 }
 
 struct Stream (Sample, Index)
@@ -134,7 +137,7 @@ struct Sampler (Stream)
 		public {/*InputRange}*/
 			Sample front ()
 				{/*...}*/
-					return this[first];
+					return this[zero!Index];
 				}
 
 			void popFront ()
@@ -153,7 +156,7 @@ struct Sampler (Stream)
 		public {/*BidirectionalRange}*/
 			Sample back ()
 				{/*...}*/
-					return this[last - unity!Index];
+					return this[(last - first) - stride];
 				}
 			void popBack ()
 				in {/*...}*/
@@ -167,17 +170,6 @@ struct Sampler (Stream)
 			@property save ()
 				{/*...}*/
 					return this;
-				}
-		}
-		public {/*stride}*/
-			static if (Stream.is_continuous)
-				{/*...}*/
-					auto at (Stream.Frequency frequency)
-						{/*...}*/
-							this.stride = 1.0/frequency;
-
-							return this;
-						}
 				}
 		}
 		private:
@@ -205,5 +197,19 @@ struct Sampler (Stream)
 		}
 		private {/*error message}*/
 			enum no_sampling_frequency_error = `for floating-point samplers, sampling frequency must be set with "sampler.at (f)" before use`;
+		}
+		public:
+		public {/*continuity}*/
+			static if (Stream.is_continuous)
+				{/*...}*/
+					mixin Continuous!(opIndex, first, last, stride);
+
+					auto at (Stream.Frequency frequency)
+						{/*...}*/
+							this.stride = 1.0/frequency;
+
+							return this;
+						}
+				}
 		}
 	}

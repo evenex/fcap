@@ -2,10 +2,12 @@ module nidaqmx;
 
 private {/*import std}*/
 	import std.stdio: stderr;
-	import std.conv: text;
+	import std.conv: to, text;
 	import std.traits: ParameterTypeTuple, isSomeString;
 	import std.typetuple: ReplaceAll;
 	import std.string: toStringz;
+	import std.range: empty;
+	import std.algorithm: findSplitBefore;
 }
 private {/*import evx}*/
 	import evx.logic: not;
@@ -70,8 +72,61 @@ struct DAQmx
 						else version (VERBOSE)
 							try stderr.writeln (`called ` ~function_call_to_string!op (args));
 							catch (Exception) assert (0);
+
+						version (MOCK_DATA) {/*...}*/
+							import evx.units;
+
+							static if (op == `ReadAnalogF64`)
+								{/*...}*/
+									auto num_samps_per_chan = args[1];
+									auto fill_mode = args[3];
+									auto read_array = args[4];
+
+									assert (fill_mode == DAQmx_Val_GroupByScanNumber);
+
+									auto stride = mock_channel_number.length;
+
+									foreach (i; 0..num_samps_per_chan)
+										foreach (j, n; mock_channel_number[])
+											read_array[i*stride + j] = n;
+
+									sleep (num_samps_per_chan / mock_sampling_frequency);
+								}
+							else static if (op == `CreateAIVoltageChan`)
+								{/*...}*/
+									auto channel_string = args[1];
+
+									while (not (channel_string.empty))
+										{/*...}*/
+											auto split = channel_string[1..$].findSplitBefore (`,`);
+
+											if (split[0].empty)
+												break;
+
+											try mock_channel_number ~= split[0][$-1..$].to!uint;
+											catch (Exception) assert (0);
+
+											channel_string = split[1];
+										}
+								}
+							else static if (op == `CfgSampClkTiming`)
+								{/*...}*/
+									mock_sampling_frequency = args[2].hertz;
+								}
+							else static if (op == `ClearTask`)
+								{/*...}*/
+									mock_channel_number.clear;
+								}
+						}
 					}
 			}
+
+		version (MOCK_DATA) {/*...}*/
+			import evx.units: Hertz;
+
+			uint[] mock_channel_number;
+			Hertz mock_sampling_frequency;
+		}
 
 		private:
 		enum {/*Error and Warning Codes}*/
@@ -1643,7 +1698,6 @@ public {/*NI-DAQmx Attributes}*/
 	}
 }
 
-// TODO wonder if this issue has something to do with disappearing 0-strings
 version (LIVE) unittest {/*basic reading}*/
 	import std.math: isNaN;
 
@@ -1696,7 +1750,6 @@ version (LIVE) unittest {/*basic writing}*/
 	DAQmx.StartTask (task_handle);
 
 	import evx.units;
-	import fcap;
 	sleep (5.seconds); // attach LED to AO0 and AOGND, it should blink 5 times
 
 	DAQmx.StopTask (task_handle);
