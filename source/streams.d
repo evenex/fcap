@@ -19,9 +19,6 @@ private {/*import evx}*/
 
 	import evx.algebra:
 		zero, unity;
-
-	import evx.analysis:
-		Continuous;
 }
 
 struct Stream (Sample, Index)
@@ -202,8 +199,6 @@ struct Sampler (Stream)
 		public {/*continuity}*/
 			static if (Stream.is_continuous)
 				{/*...}*/
-					mixin Continuous!(opIndex, first, last, stride);
-
 					auto at (Stream.Frequency frequency)
 						{/*...}*/
 							this.stride = 1.0/frequency;

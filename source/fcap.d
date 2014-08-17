@@ -240,7 +240,7 @@ class DAQDevice (Specs...)
 
 					return cast(uint)x.floor;
 				}
-			Seconds time_at_index (uint i)
+			Seconds time_at_index (size_t i)
 				{/*...}*/
 					return i * recording_length / sample_count;
 				}
@@ -758,11 +758,11 @@ class DAQDevice (Specs...)
 				}
 		}
 		const @property {/*buffer block sizes}*/
-			size_t block_size (size_t units)
+			uint block_size (size_t units)
 				{/*...}*/
-					return cast(size_t)((sampling_frequency / capture_frequency) * units).ceil;
+					return cast(uint)((sampling_frequency / capture_frequency) * units).ceil;
 				}
-			size_t buffer_size (size_t units)
+			uint buffer_size (size_t units)
 				out (result) {/*...}*/
 					assert (result == 0 || result % block_size (units) == 0);
 				}
@@ -777,7 +777,7 @@ class DAQDevice (Specs...)
 
 					auto samples_to_buffer = ceil (M/B) * B;
 
-					return cast(size_t)(samples_to_buffer * units).ceil;
+					return cast(uint)(samples_to_buffer * units).ceil;
 				}
 
 			enum in_samples = 1;
