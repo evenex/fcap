@@ -7,13 +7,14 @@ private {/*import std}*/
 	import std.typetuple: ReplaceAll;
 	import std.string: toStringz;
 	import std.range: empty;
-	import std.algorithm: findSplitBefore;
+	import std.algorithm: sort, findSplitBefore;
 }
 private {/*import evx}*/
 	import evx.logic: not;
 	import evx.utils: τ, function_call_to_string;
 	import evx.meta: DynamicLibrary;
 }
+import evx.utils: writeln;
 
 alias NIBool = uint;
 alias TaskHandle = uint*;
@@ -75,25 +76,44 @@ struct DAQmx
 
 						version (MOCK_DATA) {/*...}*/
 							import evx.units;
+							static size_t sample_counter;
 
 							static if (op == `ReadAnalogF64`)
 								{/*...}*/
+									import std.math: isNaN;
+
+									assert (not (mock_sampling_frequency.to_scalar.isNaN), `mock sampling frequency must be initialized with CfgSampClkTiming`);
+
 									auto num_samps_per_chan = args[1];
 									auto fill_mode = args[3];
 									auto read_array = args[4];
 
 									assert (fill_mode == DAQmx_Val_GroupByScanNumber);
 
-									auto stride = mock_channel_number.length;
+									auto stride = mock_channel.length;
 
 									foreach (i; 0..num_samps_per_chan)
-										foreach (j, n; mock_channel_number[])
-											read_array[i*stride + j] = n;
+										{/*write data}*/
+											auto j = 0;
+
+											import std.algorithm: map, zip;
+											import std.range: array;
+
+											try foreach (signal; zip (mock_channel.byKey, mock_channel.byValue).array
+												.sort!((a,b) => a[0] < b[0])
+												.map!(τ => τ[1])
+											) read_array[i*stride + (j++)] = signal (i + num_samps_per_chan * sample_counter);
+											catch (Exception) assert (0);
+										}
+
+									++sample_counter;
 
 									sleep (num_samps_per_chan / mock_sampling_frequency);
 								}
 							else static if (op == `CreateAIVoltageChan`)
 								{/*...}*/
+									sample_counter = 0;
+
 									auto channel_string = args[1];
 
 									while (not (channel_string.empty))
@@ -103,8 +123,17 @@ struct DAQmx
 											if (split[0].empty)
 												break;
 
-											try mock_channel_number ~= split[0][$-1..$].to!uint;
+											uint n;
+											try n = split[0][$-1..$].to!uint;
 											catch (Exception) assert (0);
+
+											if (not (n in mock_channel))
+												{/*provide default}*/
+													double delegate(uint) nothrow constant (uint x)
+														{return i => x;}
+
+													mock_channel[n] = constant (n);
+												}
 
 											channel_string = split[1];
 										}
@@ -113,10 +142,6 @@ struct DAQmx
 								{/*...}*/
 									mock_sampling_frequency = args[2].hertz;
 								}
-							else static if (op == `ClearTask`)
-								{/*...}*/
-									mock_channel_number.clear;
-								}
 						}
 					}
 			}
@@ -124,7 +149,7 @@ struct DAQmx
 		version (MOCK_DATA) {/*...}*/
 			import evx.units: Hertz;
 
-			uint[] mock_channel_number;
+			double delegate(size_t)[uint] mock_channel;
 			Hertz mock_sampling_frequency;
 		}
 

@@ -11,6 +11,9 @@ private {/*import std}*/
 
 	import std.functional:
 		toDelegate;
+
+	import std.conv:
+		to;
 }
 private {/*import evx}*/
 	import evx.traits: 
@@ -19,13 +22,16 @@ private {/*import evx}*/
 
 	import evx.algebra:
 		zero, unity;
+
+	import evx.analysis:
+		interval, is_continuous;
 }
 
 struct Stream (Sample, Index)
 	if (supports_arithmetic!Index)
 	{/*...}*/
 		nothrow:
-		enum is_continuous = allSatisfy!(isFloatingPoint, RepresentationTypeTuple!Index);
+		enum is_continuous = .is_continuous!Index;
 
 		public:
 		const {/*[┄]}*/
@@ -42,7 +48,7 @@ struct Stream (Sample, Index)
 					assert (last_index !is null, `attempt to access stream before ready`);
 				}
 				body {/*...}*/
-					return Sampler!Stream (&this, zero!Index, last_index ());
+					return Sampler!Stream (this, zero!Index, last_index ());
 				}
 
 			auto opSlice (Index i, Index j)
@@ -50,7 +56,7 @@ struct Stream (Sample, Index)
 					assert (source !is null, `attempt to access stream before ready`);
 				}
 				body {/*...}*/
-					return Sampler!Stream (&this, i, j);
+					return Sampler!Stream (this, i, j);
 				}
 
 			auto opIndex (Index i)
@@ -66,9 +72,9 @@ struct Stream (Sample, Index)
 				{/*...}*/
 					alias Frequency = typeof(1.0/(Index.init));
 
-					Frequency frequency = zero!Frequency;
+					Frequency delegate() frequency;
 
-					auto at (Frequency frequency)
+					auto at (Frequency delegate() nothrow frequency)
 						{/*...}*/
 							this.frequency = frequency;
 
@@ -108,27 +114,37 @@ struct Sampler (Stream)
 
 		public:
 		public {/*[┄]}*/
-			@property length () const
+			static if (Stream.is_continuous)
 				{/*...}*/
-					return last;
-				}
-			static assert (has_length!Sampler);
+					@property measure () const
+						{/*...}*/
+							return last - first;
+						}
 
-			alias opDollar = length;
+					alias opDollar = measure;
+			}
+			else {/*...}*/
+				@property length () const
+					{/*...}*/
+						return last - first;
+					}
+
+				alias opDollar = length;
+			}
 
 			auto opSlice ()
 				{/*...}*/
-					return this;
+					return Sampler (this, first, last);
 				}
 
 			auto opSlice (Index i, Index j)
 				{/*...}*/
-					return Sampler (stream, i, j);
+					return Sampler (this, first + i, first + j);
 				}
 
 			auto opIndex (Index i)
 				{/*...}*/
-					return (*stream)[first + i];
+					return source (first + i);
 				}
 		}
 		public {/*InputRange}*/
@@ -147,13 +163,13 @@ struct Sampler (Stream)
 
 			bool empty () const
 				{/*...}*/
-					return first >= last;
+					return first + stride >= last;
 				}
 		}
 		public {/*BidirectionalRange}*/
 			Sample back ()
 				{/*...}*/
-					return this[(last - first) - stride];
+					return this[$ - stride];
 				}
 			void popBack ()
 				in {/*...}*/
@@ -169,17 +185,41 @@ struct Sampler (Stream)
 					return this;
 				}
 		}
+		public {/*frequency}*/
+			static if (Stream.is_continuous)
+				{/*...}*/
+					auto at (Stream.Frequency frequency)
+						{/*...}*/
+							this.stride = 1.0/frequency;
+
+							return this;
+						}
+				}
+		}
 		private:
 		private {/*ctor}*/
-			this (const(Stream)* stream, Index first, Index last)
+			this (Stream stream, Index first, Index last)
 				{/*...}*/
 					this.first = first;
 					this.last = last;
 
 					static if (Stream.is_continuous)
-						this.stride = 1.0/stream.frequency;
+						{/*...}*/
+							this.frequency = stream.frequency;
+							this.stride = 1 / frequency ();
+						}
 
-					this.stream = stream;
+					this.source = stream.source;
+				}
+			this (Sampler that, Index first, Index last)
+				{/*...}*/
+					this = that;
+
+					this.first = first;
+					this.last = last;
+
+					static if (Stream.is_continuous)
+						this.stride = 1 / frequency ();
 				}
 		}
 		private {/*data}*/
@@ -190,21 +230,12 @@ struct Sampler (Stream)
 				Index stride = zero!Index;
 			else enum stride = unity!Index;
 
-			const(Stream)* stream;
+			Sample delegate(Index) source;
+
+			static if (Stream.is_continuous)
+				Stream.Frequency delegate() frequency;
 		}
 		private {/*error message}*/
 			enum no_sampling_frequency_error = `for floating-point samplers, sampling frequency must be set with "sampler.at (f)" before use`;
-		}
-		public:
-		public {/*continuity}*/
-			static if (Stream.is_continuous)
-				{/*...}*/
-					auto at (Stream.Frequency frequency)
-						{/*...}*/
-							this.stride = 1.0/frequency;
-
-							return this;
-						}
-				}
 		}
 	}
