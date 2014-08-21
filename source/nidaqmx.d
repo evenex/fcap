@@ -11,10 +11,9 @@ private {/*import std}*/
 }
 private {/*import evx}*/
 	import evx.logic: not;
-	import evx.utils: τ, function_call_to_string;
+	import evx.utils: τ, function_call_to_string, to_c, writeln;
 	import evx.meta: DynamicLibrary;
 }
-import evx.utils: writeln;
 
 alias NIBool = uint;
 alias TaskHandle = uint*;
@@ -27,30 +26,9 @@ struct DAQmx
 			{/*...}*/
 				static opDispatch (Args...)(Args args)
 					{/*...}*/
-						alias CArgs = ReplaceAll!(string, const(char)*, Args);
-						CArgs c_args;
+						auto c_args = to_c(args).expand;
 
-						foreach (i, arg; args)
-							{/*Args → CArgs}*/
-								static if (isSomeString!(typeof(arg)))
-									c_args[i] = args[i].toStringz;
-								else c_args[i] = args[i];
-							}
-
-						enum generic_error = `call to DAQmxBase` ~op~ ` (` ~CArgs.stringof~ `) failed to compile`;
-						static if (__traits(compiles, mixin(q{ParameterTypeTuple!(DAQmxBase} ~op~ q{)})))
-							{/*enum error}*/
-								mixin(q{
-									alias Params = ParameterTypeTuple!(DAQmxBase} ~op~ q{);
-								});
-
-								static if (not(is(CArgs == Params)))
-									enum error = `cannot call DAQmxBase` ~op~ ` ` ~Params.stringof~ ` with ` ~CArgs.stringof;
-								else enum error = generic_error;
-							}
-						else enum error = generic_error;
-
-						static assert (__traits(compiles, mixin(q{DAQmxBase} ~op~ q{ (c_args)})), error);
+						verify_function_call!(`DAQmxBase` ~op)(c_args);
 
 						version (LIVE) mixin(q{
 							uint status = DAQmxBase} ~op~ q{ (c_args);
@@ -65,14 +43,13 @@ struct DAQmx
 								DAQmxBaseGetExtendedErrorInfo (error_string.ptr, error_string.sizeof);
 
 								string assert_msg;
-								try assert_msg ~= `call to ` ~function_call_to_string!op (args)~ ` at ` ~file~ `:` ~line.text~ ` failed: ` ~error_string;
+								try assert_msg ~= `error: call to ` ~function_call_to_string!op (args)~ ` at ` ~file~ `:` ~line.text~ ` failed: ` ~error_string;
 								catch (Exception) assert (0);
 
 								assert (0, assert_msg);
 							}
 						else version (VERBOSE)
-							try stderr.writeln (`called ` ~function_call_to_string!op (args));
-							catch (Exception) assert (0);
+							writeln (`called ` ~function_call_to_string!op (args));
 
 						version (MOCK_DATA) {/*...}*/
 							import evx.units;

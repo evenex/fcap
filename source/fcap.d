@@ -78,8 +78,8 @@ private {/*import evx}*/
 	import evx.utils:
 		Index;
 
+	import evx.service;
 	import evx.streams;
-
 	import evx.vectors;
 	import evx.units;
 }
@@ -98,11 +98,9 @@ public {/*units}*/
 	alias mm = millimeters;
 }
 
-nothrow:
-
-class DAQDevice (Specs...)
+final class DAQDevice (Specs...): Service
 	{/*...}*/
-		nothrow:
+		__gshared:
 		static {/*assertions}*/
 			mixin template check (string specification)
 				{/*...}*/
@@ -154,7 +152,7 @@ class DAQDevice (Specs...)
 				}
 			bool is_streaming ()
 				{/*...}*/
-					return streaming;
+					return this.is_running;
 				}
 		}
 		const @property {/*counters}*/
@@ -272,41 +270,6 @@ class DAQDevice (Specs...)
 		}
 		public:
 		public {/*controls}*/
-			private enum Status {initialized, terminated}
-
-			void start ()
-				{/*...}*/
-					void launch ()
-						{/*...}*/
-							streaming_thread = spawn (cast(shared)&stream);
-
-							version (MOCK_DATA)
-								auto duration = std.datetime.minutes (1);
-							else auto duration = std.datetime.msecs (500);
-
-							if (not (received_before (duration, (Status _){})))
-								assert (0, `streaming thread failed to launch`);
-						}
-
-					//
-
-					if (not (is_ready))
-						reset;
-
-					try launch;
-					catch (Exception) assert (0);
-				}
-			void stop ()
-				{/*...}*/
-					if (this.is_streaming)
-						{/*...}*/
-							streaming = false;
-
-							try if (not (received_before (std.datetime.msecs (500), (Status _){})))
-								assert (0);
-							catch (Exception) assert (0);
-						}
-				}
 			void reset ()
 				out {/*...}*/
 					assert (this.is_ready || count_open!`input` == 0, `DAQ reset error`);
@@ -320,6 +283,8 @@ class DAQDevice (Specs...)
 					initialize_channels;
 
 					buffer = RingBuffer (buffer_size (in_doubles));
+
+					n_samples_streamed = 0;
 				}
 		}
 		public {/*channels}*/
@@ -523,13 +488,15 @@ class DAQDevice (Specs...)
 								scope samples = new double[n_samples];
 								
 								foreach (i, ref sample; samples)
-									sample = generator (time_at_index (i)).to_scalar;
+									sample = generator (i/sampling_frequency).to_scalar;
 
 								foreach (sample; samples)
-									assert (sample.volts.is_contained_in (voltage_range!`output`));
+									assert (sample.volts.is_contained_in (voltage_range!`output`),
+										`output exceeded voltage range`
+									);
 
 								enum auto_start = false;
-								enum timeout = 5.seconds;
+								enum timeout = 10.seconds;
 								int n_samples_written;
 
 								DAQmx.WriteAnalogF64 (output_task,
@@ -588,6 +555,137 @@ class DAQDevice (Specs...)
 						channel = new Output;
 				}
 		}
+		protected:
+		@Service shared override {/*}*/
+			bool initialize ()
+				{/*...}*/
+					0.writeln;
+					auto ready_channels ()
+						{/*...}*/
+							if (stream_is & capture)
+								with (cast()this) {/*...}*/
+									DAQmx.CreateTask (``, &input_task);
+
+									DAQmx.CreateAIVoltageChan (input_task, 
+										channel_string!`input`, ``, 
+										DAQmx_Val_Cfg_Default, 
+										input_voltage_range.min.to_scalar, 
+										input_voltage_range.max.to_scalar, 
+										DAQmx_Val_Volts, 
+										null
+									);
+
+									DAQmx.CfgSampClkTiming (input_task, 
+										`OnboardClock`, 
+										sampling_frequency.to_scalar, 
+										DAQmx_Val_Rising, 
+										DAQmx_Val_ContSamps, 
+										0
+									);
+
+									DAQmx.CfgDigEdgeStartTrig (input_task, 
+										`/` ~device_id~ `/PFI0`, 
+										DAQmx_Val_Rising
+									);
+								}
+							if (stream_is & generate)
+								with (cast()this) {/*...}*/
+									DAQmx.CreateTask (``, &output_task);
+
+									DAQmx.CreateAOVoltageChan (output_task, 
+										channel_string!`output`, ``,
+										output_voltage_range.min.to_scalar, 
+										output_voltage_range.max.to_scalar, 
+										DAQmx_Val_Volts,
+										null
+									);
+
+									DAQmx.CfgSampClkTiming (output_task, 
+										`OnboardClock`, 
+										sampling_frequency.to_scalar, 
+										DAQmx_Val_Rising, 
+										DAQmx_Val_ContSamps, 
+										0
+									);
+
+									DAQmx.CfgDigEdgeStartTrig (output_task,
+										`/` ~device_id~ `/PFI0`,
+										DAQmx_Val_Rising
+									);
+
+									foreach (channel; output_channels[])
+										if (channel.is_open)
+											channel.upload;
+								}
+						}
+					auto start_task ()
+						{/*...}*/
+							TaskHandle trigger_task;
+
+							DAQmx.CreateTask (``, &trigger_task);
+
+							DAQmx.CreateDOChan (trigger_task, device_id~ `/port0/line0`, ``, DAQmx_Val_ChanPerLine);
+
+							auto high = ubyte.max;
+							auto timeout = 0.0;
+							int n_samples_written;
+							DAQmx.WriteDigitalU8 (trigger_task, 1, true, timeout, DAQmx_Val_GroupByScanNumber, &high, &n_samples_written, null);
+
+							DAQmx.StopTask (trigger_task);
+							DAQmx.ClearTask (trigger_task);
+						}
+
+					////
+					(cast()this).reset;
+
+					ready_channels;
+
+					start_task;
+
+					return true;
+				}
+			bool process ()
+				{/*...}*/
+					1.writeln;
+					if (stream_is & capture)
+						capture_block;
+					else sleep (1 / (cast()this).capture_frequency);
+
+					if (callback !is null)
+						with (cast()this) callback (block_size (in_samples));
+
+					return true;
+				}
+			bool listen ()
+				{/*...}*/
+					2.writeln;
+					return true;
+				}
+			bool terminate ()
+				{/*...}*/
+					3.writeln;
+					void terminate (ref TaskHandle task_handle)
+						{/*...}*/
+							DAQmx.StopTask (task_handle);
+							DAQmx.ClearTask (task_handle);
+							task_handle = null;
+						}
+
+					///
+
+					if (stream_is & capture)
+						terminate (input_task);
+
+					if (stream_is & generate)
+						terminate (output_task);
+
+					return true;
+				}
+			const string name ()
+				{/*...}*/
+					return DAQDevice.stringof;
+				}
+		}
 		private:
 		private {/*parameter validation}*/
 			void validate_parameters ()
@@ -618,149 +716,33 @@ class DAQDevice (Specs...)
 				}
 			bool parameters_invalidated;
 		}
-		private {/*data streaming}*/
-			void stream ()
+		shared {/*data streaming}*/
+			enum {capture = 0x1, generate = 0x2}
+
+			auto stream_is ()
 				{/*...}*/
-					enum {capture = 0x1, generate = 0x2}
-					auto stream_is ()
-						{/*...}*/
-							auto n_in = count_open!`input`;
-							auto n_out = count_open!`output`;
+					auto n_in = (cast()this).count_open!`input`;
+					auto n_out = (cast()this).count_open!`output`;
 
-							if (n_out == 0 && n_in > 0)
-								return capture;
-							else if (n_in == 0 && n_out > 0)
-								return generate;
-							else if (n_in > 0 && n_out > 0)
-								return (generate | capture);
-							else assert (0, `no channels open`);
-						}
-
-					void initialize ()
-						{/*...}*/
-							auto ready_channels ()
-								{/*...}*/
-									if (stream_is & capture)
-										{/*...}*/
-											DAQmx.CreateTask (``, &input_task);
-
-											DAQmx.CreateAIVoltageChan (input_task, 
-												channel_string!`input`, ``, 
-												DAQmx_Val_Cfg_Default, 
-												input_voltage_range.min.to_scalar, 
-												input_voltage_range.max.to_scalar, 
-												DAQmx_Val_Volts, 
-												null
-											);
-
-											DAQmx.CfgSampClkTiming (input_task, 
-												`OnboardClock`, 
-												sampling_frequency.to_scalar, 
-												DAQmx_Val_Rising, 
-												DAQmx_Val_ContSamps, 
-												0
-											);
-										}
-									if (stream_is & generate)
-										{/*...}*/
-											DAQmx.CreateTask (``, &output_task);
-
-											DAQmx.CreateAOVoltageChan (output_task, 
-												channel_string!`output`, ``,
-												output_voltage_range.min.to_scalar, 
-												output_voltage_range.max.to_scalar, 
-												DAQmx_Val_Volts,
-												null
-											);
-
-											if (not (stream_is & capture))
-												{/*...}*/
-													DAQmx.CfgSampClkTiming (output_task, 
-														`OnboardClock`, 
-														sampling_frequency.to_scalar, 
-														DAQmx_Val_Rising, 
-														DAQmx_Val_ContSamps, 
-														0
-													);
-												}
-											else {/*...}*/
-												DAQmx.CfgAnlgEdgeStartTrig (output_task, 
-													channel_string!`input`.findSplitBefore (`,`)[0],
-													DAQmx_Val_RisingSlope, 
-													0.0
-												);
-											}
-
-											foreach (channel; output_channels[])
-												if (channel.is_open)
-													channel.upload;
-										}
-								}
-							auto start_task ()
-								{/*...}*/
-									if (stream_is & capture)
-										DAQmx.StartTask (input_task);
-									else DAQmx.StartTask (output_task);
-								}
-
-							////
-
-							n_samples_streamed = 0;
-
-							ready_channels;
-
-							start_task;
-						}
-					void terminate ()
-						{/*...}*/
-							void terminate (ref TaskHandle task_handle)
-								{/*...}*/
-									DAQmx.StopTask (task_handle);
-									DAQmx.ClearTask (task_handle);
-									task_handle = null;
-								}
-
-							///
-
-							if (stream_is & capture)
-								terminate (input_task);
-
-							if (stream_is & generate)
-								terminate (output_task);
-						}
-
-					///
-					initialize;
-
-					try ownerTid.send (Status.initialized);
-					catch (Exception) assert (0);
-
-					streaming = true;
-
-					while (this.is_streaming)
-						{/*...}*/
-							if (stream_is & capture)
-								capture_block;
-							else sleep (1 / capture_frequency);
-
-							if (callback !is null)
-								callback (block_size (in_samples));
-						}
-
-					terminate;
-
-					try ownerTid.send (Status.terminated);
-					catch (Exception) assert (0);
+					if (n_out == 0 && n_in > 0)
+						return capture;
+					else if (n_in == 0 && n_out > 0)
+						return generate;
+					else if (n_in > 0 && n_out > 0)
+						return (generate | capture);
+					else assert (0, `no channels open`);
 				}
+
 			void capture_block ()
 				in {/*...}*/
-					assert (this.is_streaming, `attempted to capture data while not streaming`);
+					assert ((cast()this).is_streaming, `attempted to capture data while not streaming`);
 				}
 				body {/*...}*/
 					int n_samples_read = 0;
 
 					auto timeout = 5.seconds;
 
+					with (cast()this) 
 					DAQmx.ReadAnalogF64 (input_task,
 						block_size (in_samples),
 						timeout.to_scalar,
@@ -771,12 +753,14 @@ class DAQDevice (Specs...)
 						null
 					);
 
-					version (LIVE)
-					assert (n_samples_read == block_size (in_samples), `incorrect number of samples recorded`);
+					with (cast()this) {/*advance buffer}*/
+						version (LIVE)
+						assert (n_samples_read == block_size (in_samples), `incorrect number of samples recorded`);
 
-					n_samples_streamed += block_size (in_samples);
+						n_samples_streamed += block_size (in_samples);
 
-					buffer.advance (block_size (in_doubles));
+						buffer.advance (block_size (in_doubles));
+					}
 				}
 		}
 		const @property {/*buffer block sizes}*/
@@ -807,7 +791,6 @@ class DAQDevice (Specs...)
 		}
 		private:
 		private {/*status}*/
-			bool streaming;
 			size_t n_samples_streamed;
 		}
 		private {/*parameters}*/
@@ -1162,6 +1145,7 @@ struct ForcePlate
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+static if (1)
 void main ()
 	{/*...}*/
 		auto daq = new DAQDevice!(
@@ -1181,10 +1165,10 @@ void main ()
 		ForcePlate plate;
 
 		with (daq) {/*settings}*/
-			sampling_frequency = 30.kilohertz;
+			sampling_frequency = 10.kilohertz;
 			capture_frequency = 60.hertz;
 			daq.voltage_range!`input` = interval (-5.volts, 5.volts); // remove "daq." → OUTSIDE BUG: Error: need 'this' for 'voltage_range' of type 'pure nothrow @property @safe void(Interval!(Unit!(Current, -1, Mass, 1, Space, 2, Time, -3)) range)'
-			history_length = 5.seconds;
+			history_length = 2.seconds;
 		}
 		with (plate) {/*signals}*/
 			immutable TEMP = 1.0;
@@ -1205,6 +1189,18 @@ void main ()
 			/* source: check the wires */
 		}
 
+		daq.open_channel!`input` (0);
+		daq.open_channel!`output` (0);
+
+		daq.output[0].generate (t => sin (t.to_scalar) * volts).over_period (1.milliseconds);
+		//daq.output[1].generate (t => 5 * sin (t.to_scalar) * volts);
+
+		daq.record_for (500.milliseconds);
+
+		import evx.utils;
+
+		writeln (daq.output[0].sample_by_time[0.seconds..10.milliseconds]);
+		writeln (daq.input[0].sample_by_time[0.seconds..10.milliseconds]);
 	}
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1451,7 +1447,7 @@ unittest {/*...}*/
 			import std.file: remove;
 			
 			daq.open_channel!`input` (0);
-			daq.sampling_frequency = 1000.hertz;
+			daq.sampling_frequency = 10000.hertz;
 
 			DAQmx.mock_channel[0] = i => sin(1.0*i);
 

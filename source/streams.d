@@ -17,8 +17,7 @@ private {/*import std}*/
 }
 private {/*import evx}*/
 	import evx.traits: 
-		supports_arithmetic,
-		has_length;
+		supports_arithmetic;
 
 	import evx.algebra:
 		zero, unity;
