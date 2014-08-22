@@ -4,12 +4,15 @@
 	"copyright": "Copyright © 2014, vlad levenfeld",
 	"authors": ["vlad levenfeld"],
 	"dependencies": {
+		"derelict-glfw3": "~master",
+		"derelict-gl3"  : "~master",
 	},
-	"libs": ["nidaqmxbase", "gsl", "gslcblas"],
+	"libs": ["nidaqmxbase", "gsl", "gslcblas", "plplotd"],
 	"importPaths": [],
 	"targetType": "executable",
-	"buildRequirements": ["disallowDeprecations"],
+	"_buildRequirements": ["disallowDeprecations"],
 	"buildOptions": ["debugInfoC", "alwaysStackFrame"],
 	"_buildOptions": ["releaseMode", "optimize", "inline", "noBoundsCheck"],
+	"versions": ["LIVE"],
 	"postBuildCommands": ["echo '<>>'"]
 }

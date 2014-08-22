@@ -29,7 +29,6 @@ private {/*import evx}*/
 struct Stream (Sample, Index)
 	if (supports_arithmetic!Index)
 	{/*...}*/
-		nothrow:
 		enum is_continuous = .is_continuous!Index;
 
 		public:
@@ -73,7 +72,7 @@ struct Stream (Sample, Index)
 
 					Frequency delegate() frequency;
 
-					auto at (Frequency delegate() nothrow frequency)
+					auto at (Frequency delegate() frequency)
 						{/*...}*/
 							this.frequency = frequency;
 
@@ -87,7 +86,7 @@ struct Stream (Sample, Index)
 			Index delegate() last_index;
 		}
 		private {/*ctor}*/
-			this (Sample delegate(Index) nothrow source, Index delegate() nothrow last_index)
+			this (Sample delegate(Index) source, Index delegate() last_index)
 				{/*...}*/
 					this.source = source;
 					this.last_index = last_index;
@@ -107,7 +106,6 @@ auto stream_from (F, G)(F source, G max)
 
 struct Sampler (Stream)
 	{/*...}*/
-		nothrow:
 		alias Index = ReturnType!(Stream.opDollar);
 		alias Sample = ReturnType!(Stream.opIndex);
 

@@ -10,7 +10,7 @@ private {/*import std}*/
 
 	import std.range:
 		drop, repeat,
-		retro, 
+		retro, stride,
 		empty;
 
 	import std.algorithm:
@@ -96,6 +96,7 @@ public {/*units}*/
 	alias SurfaceMoment		= Vector!(2, NewtonMeters);
 
 	alias mm = millimeters;
+	alias ms = milliseconds;
 }
 
 final class DAQDevice (Specs...): Service
@@ -116,6 +117,7 @@ final class DAQDevice (Specs...): Service
 			mixin check!q{MaxOutputVoltageRange};
 			mixin check!q{Serial};
 			mixin check!q{InputBufferSize};
+			mixin check!q{OutputBufferSize};
 		}
 		static {/*specs}*/
 			template extract (string specification)
@@ -133,6 +135,7 @@ final class DAQDevice (Specs...): Service
 			mixin extract!q{MaxOutputVoltageRange};
 			mixin extract!q{Serial};
 			mixin extract!q{InputBufferSize};
+			mixin extract!q{OutputBufferSize};
 		}
 
 		public:
@@ -164,8 +167,12 @@ final class DAQDevice (Specs...): Service
 			Seconds recording_length ()
 				out (result) {/*...}*/
 					if (buffer.filled)
-						assert (result == history_length);
-					else assert (result < history_length);
+						assert (result == history_length,
+							`buffer filled, but recording length (` ~result.text~ `) doesn't match history length (` ~history_length.text~ `)`
+						);
+					else assert (result < history_length,
+						`recording length (` ~result.text~ `) exceeded history length (` ~history_length.text~ `)`
+					);
 				}
 				body {/*...}*/
 					return sample_count / sampling_frequency;
@@ -201,11 +208,37 @@ final class DAQDevice (Specs...): Service
 			void capture_frequency (Hertz frequency)
 				{/*...}*/
 					_capture_frequency = frequency;
+
+					invalidate_parameters;
+				}
+
+			Hertz generating_frequency () const
+				{/*...}*/
+					return _generating_frequency;
+				}
+			void generating_frequency (Hertz frequency)
+				{/*...}*/
+					_generating_frequency = frequency;
+
+					invalidate_parameters;
+				}
+
+			Seconds generating_period () const
+				{/*...}*/
+					return _generating_period;
+				}
+			void generating_period (Seconds period)
+				{/*...}*/
+					_generating_period = period;
+
+					invalidate_parameters;
 				}
 
 			Seconds history_length () const
 				out (result) {/*...}*/
-					assert (result >= min_recording_history, `history length calculation error`);
+					assert (result >= min_recording_history, 
+						`history length calculation error`
+					);
 				}
 				body {/*...}*/
 					return buffer_size (in_samples) / sampling_frequency;
@@ -230,7 +263,7 @@ final class DAQDevice (Specs...): Service
 					});
 
 					assert (range.is_contained_in (MaxVoltageRange ()), 
-						`attempt to exceed ` ~MaxVoltageRange.stringof~ ` for ` ~Model.name
+						range.text~ ` exceeded ` ~MaxVoltageRange.stringof~ ` for ` ~Model.name
 					);
 				}
 				body {/*...}*/
@@ -242,7 +275,7 @@ final class DAQDevice (Specs...): Service
 		const {/*time ↔ index}*/
 			uint index_at_time (Seconds t)
 				in {/*...}*/
-					assert (t >= 0.seconds, `cannot index with negative time`);
+					assert (t >= 0.seconds, `cannot index with negative time (` ~t.text~ `)`);
 				}
 				body {/*...}*/
 					alias h = recording_length;
@@ -260,8 +293,7 @@ final class DAQDevice (Specs...): Service
 				{/*...}*/
 					uint n_samples;
 
-					try return (seconds * sampling_frequency).round.to!uint;
-					catch (Exception) assert (0);
+					return (seconds * sampling_frequency).round.to!uint;
 				}
 			Seconds duration_of_sample_count (uint n_samples)
 				{/*...}*/
@@ -362,7 +394,6 @@ final class DAQDevice (Specs...): Service
 
 			class Input
 				{/*...}*/
-					nothrow:
 					const is_open ()
 						{/*...}*/
 							return open;
@@ -379,16 +410,24 @@ final class DAQDevice (Specs...): Service
 
 					const sample_at_index (Index i)
 						in {/*...}*/
-							assert (this.is_open, `attempted to access closed channel`);
-							assert (i < sample_count, `access out of bounds`);
+							assert (this.is_open, 
+								`attempted to access closed channel`
+							);
+							assert (i < sample_count,
+								`access (` ~i.text~ `) out of bounds (` ~sample_count.text~ `)`
+							);
 						}
 						body {/*...}*/
 							return buffer[offset + stride * i].volts;
 						}
 					const sample_at_time (Seconds t)
 						in {/*...}*/
-							assert (this.is_open, `attempted to access closed channel`);
-							assert (t.between (0.seconds, recording_length), `access out of bounds`);
+							assert (this.is_open, 
+								`attempted to access closed channel`
+							);
+							assert (t.between (0.seconds, recording_length),
+								`access (` ~t.text~ `) out of bounds (` ~interval (0.seconds, recording_length).text~ `)`
+							);
 						}
 						body {/*...}*/
 							return sample_at_index (index_at_time (t));
@@ -403,7 +442,6 @@ final class DAQDevice (Specs...): Service
 				}
 			class Output
 				{/*...}*/
-					nothrow:
 					const is_open ()
 						{/*...}*/
 							return open;
@@ -420,19 +458,29 @@ final class DAQDevice (Specs...): Service
 
 					const sample_at_index (Index i)
 						in {/*...}*/
-							assert (this.is_open, `attempted to access closed channel`);
+							assert (this.is_open,
+								`attempted to access closed channel`
+							);
 						}
 						body {/*...}*/
+							alias period = generating_period;
+
 							if (period.is_infinite || n_samples_streamed < n_samples_in (period))
 								return generator (time_at_index (i));
 							else return generator (time_at_index ((i + n_samples_streamed) % n_samples_in (period)));
 						}
 					const sample_at_time (Seconds t)
 						in {/*...}*/
-							assert (this.is_open, `attempted to access closed channel`);
-							assert (t.between (0.seconds, recording_length), `access out of bounds`);
+							assert (this.is_open,
+								`attempted to access closed channel`
+							);
+							assert (t.between (0.seconds, recording_length),
+								`access (` ~t.text~ `) out of bounds (` ~interval (0.seconds, recording_length).text~ `)`
+							);
 						}
 						body {/*...}*/
+							alias period = generating_period;
+
 							if (period.is_infinite)
 								return generator (t);
 							else return generator (t % period);
@@ -446,17 +494,9 @@ final class DAQDevice (Specs...): Service
 							}
 					}
 					public {/*settings}*/
-						auto generate (Volts function(Seconds) nothrow generator)
+						auto generate (Volts delegate(Seconds) generator)
 							{/*...}*/
 								this.generator = generator;
-
-								invalidate_parameters;
-
-								return this;
-							}
-						auto over_period (Seconds period)
-							{/*...}*/
-								this.period = period;
 
 								invalidate_parameters;
 
@@ -465,58 +505,27 @@ final class DAQDevice (Specs...): Service
 					}
 					private:
 					private {/*data}*/
-						auto period = infinite!Seconds;
-
-						Volts function(Seconds) generator;
+						Volts delegate(Seconds) generator;
 
 						bool open;
-						size_t offset; // REVIEW
-						size_t stride; // REVIEW
+						size_t offset;
+						size_t stride;
 					}
 					private {/*upload}*/
-						auto upload ()
+						auto upload (scope double[] samples)
 							in {/*...}*/
 								assert (this.is_open, `attempted to access closed channel`);
 							}
 							body {/*...}*/
-								size_t n_samples;
-
-								if (period.is_infinite)
-									n_samples = n_samples_in (history_length);
-								else n_samples = n_samples_in (period);
-
-								scope samples = new double[n_samples];
-								
-								foreach (i, ref sample; samples)
-									sample = generator (i/sampling_frequency).to_scalar;
-
-								foreach (sample; samples)
-									assert (sample.volts.is_contained_in (voltage_range!`output`),
-										`output exceeded voltage range`
-									);
-
-								enum auto_start = false;
-								enum timeout = 10.seconds;
-								int n_samples_written;
-
-								DAQmx.WriteAnalogF64 (output_task,
-									n_samples,
-									auto_start,
-									timeout.to_scalar,
-									DAQmx_Val_GroupByScanNumber,
-									samples.ptr,
-									&n_samples_written,
-									null
-								);
-
-								version (LIVE)
-								assert (n_samples_written == n_samples);
+								//foreach (size_t i, ref sample; samples[offset..$].stride (this.stride)) // OUTSIDE BUG Error: cannot infer argument types
+								for (size_t i = 0; offset + i*stride < samples.length; ++i)
+									samples[offset + i*stride] = generator (i/generating_frequency).to_scalar;
 							}
 					}
 				}
 		}
 		public {/*callbacks}*/
-			void on_stream_update (void delegate(uint n_samples_streamed) nothrow callback) // no invalidation
+			void on_capture (void delegate(uint n_samples_streamed) callback) // no invalidation
 				{/*...}*/
 					this.callback = callback;
 				}
@@ -525,7 +534,7 @@ final class DAQDevice (Specs...): Service
 			this ()
 				{/*...}*/
 					version (LIVE)
-					try {/*identify device}*/
+					{/*identify device}*/
 						auto lsdaq = pipeShell (`lsdaq`).stdout.byLine.drop (3);
 
 						if (not (lsdaq.front.canFind (`Dev`)))
@@ -546,7 +555,6 @@ final class DAQDevice (Specs...): Service
 									break;
 							}
 					}
-					catch (Exception) assert (0);
 
 					foreach (ref channel; input_channels)
 						channel = new Input;
@@ -559,7 +567,6 @@ final class DAQDevice (Specs...): Service
 		@Service shared override {/*}*/
 			bool initialize ()
 				{/*...}*/
-					0.writeln;
 					auto ready_channels ()
 						{/*...}*/
 							if (stream_is & capture)
@@ -587,6 +594,8 @@ final class DAQDevice (Specs...): Service
 										`/` ~device_id~ `/PFI0`, 
 										DAQmx_Val_Rising
 									);
+
+									DAQmx.StartTask (input_task);
 								}
 							if (stream_is & generate)
 								with (cast()this) {/*...}*/
@@ -602,7 +611,7 @@ final class DAQDevice (Specs...): Service
 
 									DAQmx.CfgSampClkTiming (output_task, 
 										`OnboardClock`, 
-										sampling_frequency.to_scalar, 
+										generating_frequency.to_scalar, 
 										DAQmx_Val_Rising, 
 										DAQmx_Val_ContSamps, 
 										0
@@ -613,40 +622,78 @@ final class DAQDevice (Specs...): Service
 										DAQmx_Val_Rising
 									);
 
-									foreach (channel; output_channels[])
-										if (channel.is_open)
-											channel.upload;
+									{/*upload samples}*/
+										auto n_samples = (generating_period * generating_frequency).to!size_t;
+
+										assert (n_samples * count_open!`output` < OutputBufferSize (),
+											`number of output samples (` ~(n_samples * count_open!`output`).text~ `) exceeded ` ~OutputBufferSize.stringof
+										);
+
+										scope samples = new double[n_samples * count_open!`output`];
+
+										foreach (channel; output_channels[])
+											if (channel.is_open)
+												channel.upload (samples);
+
+										foreach (sample; samples)
+											assert (sample.volts.is_contained_in (output_voltage_range),
+												`output (` ~sample.text~ `) exceeded voltage range (` ~output_voltage_range.text~ `)` 
+											);
+
+										enum auto_start = false;
+										enum timeout = 5.seconds;
+										int n_samples_written;
+
+										DAQmx.WriteAnalogF64 (output_task,
+											n_samples,
+											auto_start,
+											timeout.to_scalar,
+											DAQmx_Val_GroupByScanNumber,
+											samples.ptr,
+											&n_samples_written,
+											null
+										);
+
+										version (LIVE)
+										assert (n_samples_written == n_samples);
+									}
+
+									DAQmx.StartTask (output_task);
 								}
 						}
-					auto start_task ()
+					auto start_trigger ()
 						{/*...}*/
 							TaskHandle trigger_task;
 
 							DAQmx.CreateTask (``, &trigger_task);
 
-							DAQmx.CreateDOChan (trigger_task, device_id~ `/port0/line0`, ``, DAQmx_Val_ChanPerLine);
+							DAQmx.CreateDOChan (trigger_task, device_id~ `/port1/line0`, ``, DAQmx_Val_ChanPerLine);
 
 							auto high = ubyte.max;
 							auto timeout = 0.0;
+							enum auto_start = true;
 							int n_samples_written;
-							DAQmx.WriteDigitalU8 (trigger_task, 1, true, timeout, DAQmx_Val_GroupByScanNumber, &high, &n_samples_written, null);
+							DAQmx.WriteDigitalU8 (trigger_task, 1, auto_start, timeout, DAQmx_Val_GroupByScanNumber, &high, &n_samples_written, null);
+
+							high = 0;
+							DAQmx.WriteDigitalU8 (trigger_task, 1, auto_start, timeout, DAQmx_Val_GroupByScanNumber, &high, &n_samples_written, null);
 
 							DAQmx.StopTask (trigger_task);
 							DAQmx.ClearTask (trigger_task);
 						}
 
 					////
+
 					(cast()this).reset;
 
 					ready_channels;
 
-					start_task;
+					start_trigger;
 
 					return true;
 				}
 			bool process ()
 				{/*...}*/
-					1.writeln;
 					if (stream_is & capture)
 						capture_block;
 					else sleep (1 / (cast()this).capture_frequency);
@@ -658,12 +705,10 @@ final class DAQDevice (Specs...): Service
 				}
 			bool listen ()
 				{/*...}*/
-					2.writeln;
-					return true;
+					return false;
 				}
 			bool terminate ()
 				{/*...}*/
-					3.writeln;
 					void terminate (ref TaskHandle task_handle)
 						{/*...}*/
 							DAQmx.StopTask (task_handle);
@@ -691,19 +736,21 @@ final class DAQDevice (Specs...): Service
 			void validate_parameters ()
 				{/*...}*/
 					if (not (sampling_frequency * count_open!`input` <= MaxSamplingRate ()))
-						assert (0, `combined sampling frequency exceeds ` ~MaxSamplingRate.stringof);
+						assert (0, `combined sampling frequency (` ~(sampling_frequency * count_open!`input`).text~ `) exceeded ` ~MaxSamplingRate.stringof);
+
+					// TODO generating freq and period stuff
 
 					if (not (history_length >= min_recording_history))
 						assert (0, `history length calculation error`);
 						
 					if (not (voltage_range!`input`.is_contained_in (MaxInputVoltageRange ())))
-						assert (0, `input voltage exceeds ` ~MaxInputVoltageRange.stringof);
+						assert (0, `input voltage (` ~voltage_range!`input`.text~ `) exceeded ` ~MaxInputVoltageRange.stringof);
 
 					if (not (capture_frequency <= sampling_frequency))
-						assert (0, `capture frequency exceeds sampling frequency`);
+						assert (0, `capture frequency (` ~capture_frequency.text~ `) exceeded sampling frequency (` ~sampling_frequency.text~ `)`);
 
 					if (not (buffer_size (in_samples) % block_size (in_samples) == 0))
-						assert (0, `buffer not evenly divisible into blocks`);
+						assert (0, `buffer (` ~buffer_size (in_samples).text~ `) not evenly divisible into blocks (` ~block_size (in_samples).text~ `)`);
 
 					parameters_invalidated = false;
 				}
@@ -755,7 +802,9 @@ final class DAQDevice (Specs...): Service
 
 					with (cast()this) {/*advance buffer}*/
 						version (LIVE)
-						assert (n_samples_read == block_size (in_samples), `incorrect number of samples recorded`);
+						assert (n_samples_read == block_size (in_samples),
+							`incorrect number of samples recorded (` ~n_samples_read.text~ `, ` ~block_size (in_samples).text~ ` expected)`
+						);
 
 						n_samples_streamed += block_size (in_samples);
 
@@ -770,7 +819,9 @@ final class DAQDevice (Specs...): Service
 				}
 			uint buffer_size (size_t units)
 				out (result) {/*...}*/
-					assert (result % block_size (units) == 0);
+					assert (result % block_size (units) == 0, 
+						`buffer size (` ~result.text~ `) is not evenly divisible into blocks (` ~block_size (units).text~ `)`
+					);
 				}
 				body {/*...}*/
 					auto minimum_samples_to_buffer = min_recording_history * sampling_frequency;
@@ -783,7 +834,7 @@ final class DAQDevice (Specs...): Service
 
 					auto samples_to_buffer = ceil (M/B) * B;
 
-					return cast(uint)(samples_to_buffer * units).ceil;
+					return cast(uint)(samples_to_buffer * units);
 				}
 
 			enum in_samples = 1;
@@ -799,6 +850,8 @@ final class DAQDevice (Specs...): Service
 			auto min_recording_history = 1.second;
 			auto _sampling_frequency = MaxSamplingRate () / InputChannels.count;
 			auto _capture_frequency = 30.hertz;
+			auto _generating_frequency = 30.hertz;
+			auto _generating_period = infinity.seconds;
 		}
 		private {/*handles}*/
 			string device_id;
@@ -836,8 +889,7 @@ final class DAQDevice (Specs...): Service
 
 					foreach (i, channel; mixin(channel_type))
 						if (channel.is_open)
-							try channel_string ~= device_id~ `/a` ~channel_type[0]~i.text~ `, `;
-							catch (Exception) assert (0);
+							channel_string ~= device_id~ `/a` ~channel_type[0]~i.text~ `, `;
 
 					if (channel_string.empty)
 						return ``;
@@ -909,7 +961,7 @@ final class DAQDevice (Specs...): Service
 
 					invariant(){/*}*/
 						if (buffer !is null)
-							assert (position < capacity, `ring buffer bounds error`);
+							assert (position < capacity, `ring buffer position (` ~position.text~ `) exceeded capacity (` ~capacity.text~ `)`);
 					}
 				}
 		}
@@ -917,7 +969,9 @@ final class DAQDevice (Specs...): Service
 			void delegate(uint) callback;
 		}
 		invariant (){/*}*/
-			assert (n_samples_streamed < typeof(n_samples_streamed).max - _sampling_frequency / _capture_frequency);
+			assert (n_samples_streamed < typeof(n_samples_streamed).max - _sampling_frequency / _capture_frequency,
+				`n_samples_streamed approaching ` ~typeof(n_samples_streamed).stringof~ `.max`
+			);
 		}
 	}
 	public {/*Specs}*/
@@ -991,6 +1045,17 @@ final class DAQDevice (Specs...): Service
 						return size;
 					}
 			}
+		struct OutputBufferSize (uint fifo_size)
+			{/*...}*/
+				enum size = fifo_size;
+
+				enum isOutputBufferSize;
+
+				static opCall ()
+					{/*...}*/
+						return size;
+					}
+			}
 	}
 
 /* blocking recording function 
@@ -999,8 +1064,13 @@ void record_for (T)(T daq, Seconds time)
 	{/*...}*/
 		daq.start;
 
-		while (daq.recording_length < time)
-			sleep (5.milliseconds);
+		auto span = 0.seconds;
+
+		while (span < time)
+			{/*...}*/
+				sleep (5.milliseconds);
+				span += 5.milliseconds;
+			}
 
 		daq.stop;
 	}
@@ -1009,7 +1079,6 @@ void record_for (T)(T daq, Seconds time)
 
 struct ForcePlate
 	{/*...}*/
-		nothrow:
 		@property {/*force}*/
 			const force ()
 				{/*...}*/
@@ -1141,66 +1210,6 @@ struct ForcePlate
 				Position, `sensor_offset`,
 			);
 		}
-	}
-
-/////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-static if (1)
-void main ()
-	{/*...}*/
-		auto daq = new DAQDevice!(
-			Model!`NI USB-6216`,
-
-			InputChannels!8,
-			OutputChannels!2,
-
-			MaxSamplingRate!(250_000),
-			MaxInputVoltageRange!(-10, 10),
-			MaxOutputVoltageRange!(-5, 5),
-
-			Serial!0x_18DEF36,
-			InputBufferSize!4095,
-		); /* source: http://www.ni.com/pdf/manuals/371932f.pdf */
-
-		ForcePlate plate;
-
-		with (daq) {/*settings}*/
-			sampling_frequency = 10.kilohertz;
-			capture_frequency = 60.hertz;
-			daq.voltage_range!`input` = interval (-5.volts, 5.volts); // remove "daq." → OUTSIDE BUG: Error: need 'this' for 'voltage_range' of type 'pure nothrow @property @safe void(Interval!(Unit!(Current, -1, Mass, 1, Space, 2, Time, -3)) range)'
-			history_length = 2.seconds;
-		}
-		with (plate) {/*signals}*/
-			immutable TEMP = 1.0;
-			voltage_to_force = vector (TEMP.newtons/volt, TEMP.newtons/volt, TEMP.newtons/volt);
-			/* source: TODO */
-
-			sensor_offset = vector (210.mm, 260.mm, -41.mm);
-			/* source: Kistler Type 9260AA Instruction Manual, p.33 */
-
-			fx12 = daq.input[0].sample_by_time;
-			fx34 = daq.input[1].sample_by_time;
-			fy14 = daq.input[2].sample_by_time;
-			fy23 = daq.input[3].sample_by_time;
-			fz1  = daq.input[4].sample_by_time;
-			fz2  = daq.input[5].sample_by_time;
-			fz3  = daq.input[6].sample_by_time;
-			fz4  = daq.input[7].sample_by_time;
-			/* source: check the wires */
-		}
-
-		daq.open_channel!`input` (0);
-		daq.open_channel!`output` (0);
-
-		daq.output[0].generate (t => sin (t.to_scalar) * volts).over_period (1.milliseconds);
-		//daq.output[1].generate (t => 5 * sin (t.to_scalar) * volts);
-
-		daq.record_for (500.milliseconds);
-
-		import evx.utils;
-
-		writeln (daq.output[0].sample_by_time[0.seconds..10.milliseconds]);
-		writeln (daq.input[0].sample_by_time[0.seconds..10.milliseconds]);
 	}
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1365,7 +1374,7 @@ unittest {/*...}*/
 
 
 			bool update_check;
-			daq.on_stream_update = (uint n)
+			daq.on_capture = (uint n)
 				{/*...}*/
 					with (daq) foreach (i; 1..n+1)
 						assert (input[7].sample_by_index[$-i].approx (output[0].sample_by_index[$-i] + output[1].sample_by_index[$-i]));
@@ -1377,7 +1386,7 @@ unittest {/*...}*/
 
 			assert (update_check);
 
-			daq.on_stream_update = null;
+			daq.on_capture = null;
 			DAQmx.mock_channel.clear;
 		}
 		{/*1 input, 1 output, ramp signal}*/
@@ -1443,7 +1452,7 @@ unittest {/*...}*/
 
 			DAQmx.mock_channel.clear;
 		}
-		try {/*1 input, streaming to file}*/
+		{/*1 input, streaming to file}*/
 			import std.file: remove;
 			
 			daq.open_channel!`input` (0);
@@ -1454,11 +1463,8 @@ unittest {/*...}*/
 			auto file = File (`mock_data.dat`, `w`);
 			scope (exit) remove (`mock_data.dat`);
 
-			daq.on_stream_update = (uint n)
-				{/*...}*/
-					try file.writeln (daq.input[0].sample_by_index[$-n..$]);
-					catch (Exception) assert (0);
-				};
+			daq.on_capture = (uint n)
+				{file.writeln (daq.input[0].sample_by_index[$-n..$]);};
 
 			daq.record_for (1.second);
 
@@ -1467,6 +1473,70 @@ unittest {/*...}*/
 			assert (file.byLine.front == daq.input[0].sample_by_index[0..daq.n_samples_in (1/daq.capture_frequency)].text);
 
 			DAQmx.mock_channel.clear;
-		} catch (Exception) assert (0);
+		}
 	}
 }
+/////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void main ()
+	{/*...}*/
+		auto daq = new DAQDevice!(
+			Model!`NI USB-6216`,
+			Serial!0x_18DEF36,
+
+			InputChannels!8,
+			OutputChannels!2,
+
+			InputBufferSize!4095,
+			OutputBufferSize!8191,
+
+			MaxSamplingRate!(250_000),
+			MaxInputVoltageRange!(-10, 10),
+			MaxOutputVoltageRange!(-10, 10),
+		); /* source: http://www.ni.com/pdf/manuals/371932f.pdf */
+
+		ForcePlate plate;
+
+		with (daq) {/*settings}*/
+			sampling_frequency = 30.kilohertz;
+			capture_frequency = 60.hertz;
+			generating_frequency = 240.hertz;
+
+			history_length = 5.seconds;
+			generating_period = 1/120.hertz;
+
+			daq.voltage_range!`input` = interval (-5.volts, 5.volts); // remove "daq." → OUTSIDE BUG: Error: need 'this' for 'voltage_range' of type 'pure nothrow @property @safe void(Interval!(Unit!(Current, -1, Mass, 1, Space, 2, Time, -3)) range)'
+			daq.voltage_range!`output` = interval (0.volts, 3.volts); // remove "daq." → OUTSIDE BUG: Error: need 'this' for 'voltage_range' of type 'pure nothrow @property @safe void(Interval!(Unit!(Current, -1, Mass, 1, Space, 2, Time, -3)) range)'
+		}
+		with (plate) {/*signals}*/
+			voltage_to_force = vector (1250.newtons/5.volts, 1250.newtons/5.volts, 2500.newtons/5.volts);
+			/* source: TODO */
+
+			sensor_offset = vector (210.mm, 260.mm, -41.mm);
+			/* source: Kistler Type 9260AA Instruction Manual, p.33 */
+
+			fx12 = daq.input[0].sample_by_time;
+			fx34 = daq.input[1].sample_by_time;
+			fy14 = daq.input[2].sample_by_time;
+			fy23 = daq.input[3].sample_by_time;
+			fz1  = daq.input[4].sample_by_time;
+			fz2  = daq.input[5].sample_by_time;
+			fz3  = daq.input[6].sample_by_time;
+			fz4  = daq.input[7].sample_by_time;
+			/* source: check the wires */
+		}
+
+		daq.open_channels!`input`;
+		daq.open_channels!`output`;
+
+		with (daq) {/*output signal generation}*/
+			output[0].generate (t => t % generating_period < 1/generating_frequency? 3.volts : 0.volts);
+			output[1].generate (t => t % generating_period < 1/generating_frequency? 0.volts : 2.volts);
+		}
+
+		auto file = File (`test_data.dat`, `w`);
+
+		daq.on_capture =x=> file.writeln (plate.force[$-1/daq.capture_frequency..$]);
+
+		daq.record_for (10.seconds);
+	}
