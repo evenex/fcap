@@ -72,16 +72,13 @@ private {/*import evx}*/
 	import evx.arithmetic:
 		add, divide, sum;
 
-	import evx.range:
-		slice_within_bounds;
-
 	import evx.utils:
 		Index;
 
 	import evx.service;
-	import evx.streams;
 	import evx.vectors;
 	import evx.units;
+	import evx.dsp;
 }
 private {/*import nidaqmx}*/
 	import nidaqmx;
@@ -453,7 +450,7 @@ final class DAQDevice (Specs...): Service
 						}
 					const sample_by_time ()
 						{/*...}*/
-							return stream_from (&sample_at_time, &recording_length).at (&sampling_frequency);
+							return stream_from (&sample_at_time, &recording_length).at (&sampling_frequency); // REVIEW constant interpolation works because of this... here is explicit upsampling, this is what makes it work despite the lack of explicit interpolation. if i changed this to generation_frequency, i would get a range measure mismatch error
 						}
 
 					const sample_at_index (Index i)
@@ -1502,7 +1499,7 @@ void main ()
 			capture_frequency = 60.hertz;
 			generating_frequency = 240.hertz;
 
-			history_length = 5.seconds;
+			history_length = 60.seconds;
 			generating_period = 1/120.hertz;
 
 			daq.voltage_range!`input` = interval (-5.volts, 5.volts); // remove "daq." → OUTSIDE BUG: Error: need 'this' for 'voltage_range' of type 'pure nothrow @property @safe void(Interval!(Unit!(Current, -1, Mass, 1, Space, 2, Time, -3)) range)'
@@ -1536,7 +1533,10 @@ void main ()
 
 		auto file = File (`test_data.dat`, `w`);
 
-		daq.on_capture =x=> file.writeln (plate.force[$-1/daq.capture_frequency..$]);
+		auto blue_led = daq.output[0].sample_by_time;
+		immutable Δt = 1/daq.capture_frequency;
 
-		daq.record_for (10.seconds);
+		daq.on_capture =x=> file.writeln (zip (blue_led[$-Δt..$], plate.force[$-Δt..$]));
+
+		daq.record_for (60.seconds);
 	}
