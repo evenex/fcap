@@ -1536,7 +1536,47 @@ void main ()
 		auto blue_led = daq.output[0].sample_by_time;
 		immutable Δt = 1/daq.capture_frequency;
 
+		static if (0)
 		daq.on_capture =x=> file.writeln (zip (blue_led[$-Δt..$], plate.force[$-Δt..$]));
+		
+		import evx.display;
+		import evx.colors;
+		import evx.ordinal;
 
-		daq.record_for (60.seconds);
+		auto gfx = new Display;
+		gfx.start; scope (exit) gfx.stop;
+
+		int i = 0;
+		bool draw_it;
+		daq.on_capture = (size_t x)
+			{/*...}*/
+				//writeln (ℕ[0..x].length); // REVIEW why do these lengths not match up
+				//writeln (plate.force_x[$-Δt..$].length);
+
+				if (daq.recording_length > 0.5.seconds)
+				if (++i % 3 == 0)
+					draw_it = true;
+			};
+
+
+		void draw ()
+			{/*...}*/
+				auto z = (plate.force_x[$-0.5.seconds..$].length);
+				gfx.draw (red, zip (ℕ[0..z], plate.force_z[$-0.5.seconds..$])
+					.map!(τ => vector (τ[0], τ[1].to_scalar))
+					.map!(v => v / vector (0.5*z, 800) - vector (1,0))
+				);
+				gfx.render;
+			}
+
+		daq.start;
+		while (daq.is_streaming || i < 50000)
+			{/*...}*/
+				if (draw_it)
+					{/*...}*/
+						draw ();
+						draw_it = false;
+					}
+			}
+		daq.stop;
 	}

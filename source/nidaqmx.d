@@ -20,7 +20,7 @@ alias TaskHandle = uint*;
 
 struct DAQmx
 	{/*...}*/
-		__gshared nothrow:
+		__gshared:
 
 		template opDispatch (string op, string file = __FILE__, uint line = __LINE__)
 			{/*...}*/
