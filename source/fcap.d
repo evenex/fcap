@@ -1,87 +1,46 @@
 module fcap;
 
-private {/*import std}*/
-	import std.typetuple:
-		allSatisfy,
-		TypeTuple, Filter;
+private {/*imports}*/
+	private {/*core}*/
+		import core.thread;
+	}
+	private {/*std}*/
+		import std.typetuple;
+		import std.functional;
+		import std.range;
+		import std.algorithm;
+		import std.datetime;
+		import std.variant;
+		import std.math;
+		import std.c.stdlib;
+		import std.concurrency;
+		import std.stdio;
+		import std.conv;
+		import std.process;
+		import std.string;
+		import std.datetime;
+	}
+	private {/*evx}*/
+		import evx.traits; 
+		import evx.meta; 
+		import evx.utils;
+		import evx.service;
+		import evx.dsp;
+		import evx.display;
+		import evx.colors;
+		import evx.math;
+		import evx.plot;
+		import evx.scribe;
+	}
+	private {/*nidaqmx}*/
+		import nidaqmx;
+	}
 
-	import std.functional:
-		toDelegate;
-
-	import std.range:
-		drop, repeat,
-		retro, stride,
-		empty;
-
-	import std.algorithm:
-		min, max,
-		find, canFind, findSplitBefore;
-
-	import std.datetime:
-		SysTime;
-
-	import std.variant:
-		Algebraic, visit;
-
-	import std.math:
-		floor, ceil, round;
-
-	import std.c.stdlib:
-		malloc, free;
-
-	import std.concurrency:
-		spawn, Tid, ownerTid,
-		send, received_before = receiveTimeout; 
-	
-	import std.stdio:
-		stderr, File, write;
-	
-	import std.conv:
-		to, text;
-
-	import std.process:
-		pipeShell;
-
-	import std.string:
-		capitalize;
-
-	static import std.datetime;
-}
-private {/*import evx}*/
-	import evx.traits: 
-		has_trait;
-
-	import evx.meta: 
-		Builder;
-
-	import evx.functional:
-		λ, map, zip, reduce;
-
-	import evx.logic:
-		Or;
-
-	import evx.algebra:
-		zero, unity;
-
-	import evx.analysis:
-		between,
-		Interval, interval,
-		is_contained_in,
-		infinite, infinity, is_infinite;
-
-	import evx.arithmetic:
-		add, divide, sum;
-
-	import evx.utils:
-		Index;
-
-	import evx.service;
-	import evx.vectors;
-	import evx.units;
-	import evx.dsp;
-}
-private {/*import nidaqmx}*/
-	import nidaqmx;
+	alias zip = evx.functional.zip;
+	alias map = evx.functional.map;
+	alias reduce = evx.functional.reduce;
+	alias Interval = evx.analysis.Interval;
+	alias seconds = evx.units.seconds;
 }
 
 public {/*units}*/
@@ -693,7 +652,7 @@ final class DAQDevice (Specs...): Service
 				{/*...}*/
 					if (stream_is & capture)
 						capture_block;
-					else sleep (1 / (cast()this).capture_frequency);
+					else Thread.sleep ((1 / (cast()this).capture_frequency).to_duration);
 
 					if (callback !is null)
 						with (cast()this) callback (block_size (in_samples));
@@ -810,11 +769,11 @@ final class DAQDevice (Specs...): Service
 				}
 		}
 		const @property {/*buffer block sizes}*/
-			uint block_size (size_t units)
+			size_t block_size (size_t units)
 				{/*...}*/
-					return cast(uint)((sampling_frequency / capture_frequency) * units).ceil;
+					return ((sampling_frequency / capture_frequency).ceil * units).to!size_t;
 				}
-			uint buffer_size (size_t units)
+			size_t buffer_size (size_t units)
 				out (result) {/*...}*/
 					assert (result % block_size (units) == 0, 
 						`buffer size (` ~result.text~ `) is not evenly divisible into blocks (` ~block_size (units).text~ `)`
@@ -830,8 +789,7 @@ final class DAQDevice (Specs...): Service
 						return 0;
 
 					auto samples_to_buffer = ceil (M/B) * B;
-
-					return cast(uint)(samples_to_buffer * units);
+					return (samples_to_buffer * units).to!size_t;
 				}
 
 			enum in_samples = 1;
@@ -1213,16 +1171,17 @@ struct ForcePlate
 unittest {/*...}*/
 	auto daq = new DAQDevice!(
 		Model!`NI USB-6216`,
+		Serial!0x_18DEF36,
 
 		InputChannels!8,
 		OutputChannels!2,
 
+		InputBufferSize!4095,
+		OutputBufferSize!8191,
+
 		MaxSamplingRate!(250_000),
 		MaxInputVoltageRange!(-10, 10),
-		MaxOutputVoltageRange!(-5, 5),
-
-		Serial!0x_18DEF36,
-		InputBufferSize!4095,
+		MaxOutputVoltageRange!(-10, 10),
 	); /* source: http://www.ni.com/pdf/manuals/371932f.pdf */
 
 	ForcePlate plate;
@@ -1495,7 +1454,7 @@ void main ()
 		ForcePlate plate;
 
 		with (daq) {/*settings}*/
-			sampling_frequency = 30.kilohertz;
+			sampling_frequency = 1.kilohertz;
 			capture_frequency = 60.hertz;
 			generating_frequency = 240.hertz;
 
@@ -1539,41 +1498,53 @@ void main ()
 		static if (0)
 		daq.on_capture =x=> file.writeln (zip (blue_led[$-Δt..$], plate.force[$-Δt..$]));
 		
-		import evx.display;
-		import evx.colors;
-		import evx.ordinal;
-
 		auto gfx = new Display;
 		gfx.start; scope (exit) gfx.stop;
+		auto txt = new Scribe (gfx);
 
-		int i = 0;
 		bool draw_it;
+		auto min_t = 0.5.seconds;
 		daq.on_capture = (size_t x)
 			{/*...}*/
-				//writeln (ℕ[0..x].length); // REVIEW why do these lengths not match up
-				//writeln (plate.force_x[$-Δt..$].length);
+				alias writeln = evx.utils.writeln;
+				writeln (ℕ[0..x].length); // REVIEW why do these lengths not match up
+				writeln (plate.force_x[$-Δt..$].length);
 
-				if (daq.recording_length > 0.5.seconds)
-				if (++i % 3 == 0)
+				if (daq.recording_length > min_t)
 					draw_it = true;
 			};
 
 
 		void draw ()
 			{/*...}*/
-				auto z = (plate.force_x[$-0.5.seconds..$].length);
-				gfx.draw (red, zip (ℕ[0..z], plate.force_z[$-0.5.seconds..$])
-					.map!(τ => vector (τ[0], τ[1].to_scalar))
-					.map!(v => v / vector (0.5*z, 800) - vector (1,0))
-				);
+				auto z = (plate.force_x[$-min_t..$].length);
+
+				plot (plate.force_z[$-min_t..$].versus (ℕ[0..z].map!(i => i/daq.sampling_frequency)))
+					.color (green)
+					.y_axis (`vertical force`, interval (0.newtons, 2000.newtons)) // REVIEW can we do interval (x,y).newtons? maybe using identity_element?
+					.inside ([vector (-0.8,-0.8), vector (0.8, 0.8)].bounding_box)
+					.using (gfx, txt)
+				();
+
+				static if (0)
+				gfx.draw (yellow, circle (0.05, plate.center_of_pressure.back.to_scalar * 2), GeometryMode.t_fan);
+
 				gfx.render;
 			}
 
+
+		//TEMP
+		foreach (x; 0..8)
+			DAQmx.mock_channel[x] = i => 0.5 * cast(double) sin (π*i/100f)^^2;
+
+		auto elapsed = 0.seconds;
 		daq.start;
-		while (daq.is_streaming || i < 50000)
+		while (daq.is_streaming && elapsed < 2.seconds)
 			{/*...}*/
 				if (draw_it)
 					{/*...}*/
+						elapsed += 1/daq.capture_frequency;
+
 						draw ();
 						draw_it = false;
 					}

@@ -1,18 +1,25 @@
 module nidaqmx;
 
-private {/*import std}*/
-	import std.stdio: stderr;
-	import std.conv: to, text;
-	import std.traits: ParameterTypeTuple, isSomeString;
-	import std.typetuple: ReplaceAll;
-	import std.string: toStringz;
-	import std.range: empty;
-	import std.algorithm: sort, findSplitBefore;
-}
-private {/*import evx}*/
-	import evx.logic: not;
-	import evx.utils: τ, function_call_to_string, to_c, writeln;
-	import evx.meta: DynamicLibrary;
+private {/*imports}*/
+	private {/*core}*/
+		import core.thread;
+	}
+	private {/*std}*/
+		import std.stdio;
+		import std.conv;
+		import std.traits;
+		import std.typetuple;
+		import std.string;
+		import std.range;
+		import std.algorithm;
+	}
+	private {/*evx}*/
+		import evx.math;
+		import evx.utils;
+		import evx.meta;
+	}
+
+	alias seconds = evx.units.seconds;
 }
 
 alias NIBool = uint;
@@ -85,7 +92,7 @@ struct DAQmx
 
 									++sample_counter;
 
-									sleep (num_samps_per_chan / mock_sampling_frequency);
+									Thread.sleep ((num_samps_per_chan / mock_sampling_frequency).to_duration);
 								}
 							else static if (op == `CreateAIVoltageChan`)
 								{/*...}*/
@@ -1729,9 +1736,6 @@ version (LIVE) unittest {/*basic reading}*/
 		assert (not (sample.isNaN));
 }
 version (LIVE) unittest {/*basic writing}*/
-	import std.math: abs, sin;
-	import evx.constants: π;
-
 	TaskHandle task_handle;
 
 	DAQmx.CreateTask ("", &task_handle);
@@ -1751,8 +1755,7 @@ version (LIVE) unittest {/*basic writing}*/
 
 	DAQmx.StartTask (task_handle);
 
-	import evx.units;
-	sleep (5.seconds); // attach LED to AO0 and AOGND, it should blink 5 times
+	Thread.sleep (5.seconds.to_duration); // attach LED to AO0 and AOGND, it should blink 5 times
 
 	DAQmx.StopTask (task_handle);
 	DAQmx.ClearTask (task_handle);
