@@ -29,6 +29,7 @@ private {/*imports}*/
 		import evx.display;
 		import evx.colors;
 		import evx.math;
+		import evx.range;
 		import evx.plot;
 		import evx.scribe;
 	}
@@ -54,6 +55,8 @@ public {/*units}*/
 	alias mm = millimeters;
 	alias ms = milliseconds;
 }
+
+alias writeln = evx.utils.writeln;
 
 final class DAQDevice (Specs...): Service
 	{/*...}*/
@@ -148,11 +151,11 @@ final class DAQDevice (Specs...): Service
 		@property {/*parameters}*/
 			Hertz sampling_frequency () const
 				{/*...}*/
-					return _sampling_frequency;
+					return (min_sampling_frequency / capture_frequency).ceil * capture_frequency;
 				}
 			void sampling_frequency (Hertz frequency)
 				{/*...}*/
-					_sampling_frequency = frequency;
+					min_sampling_frequency = frequency;
 					
 					invalidate_parameters;
 				}
@@ -481,7 +484,7 @@ final class DAQDevice (Specs...): Service
 				}
 		}
 		public {/*callbacks}*/
-			void on_capture (void delegate(uint n_samples_streamed) callback) // no invalidation
+			void on_capture (void delegate(uint n_samples_streamed) callback)
 				{/*...}*/
 					this.callback = callback;
 				}
@@ -694,7 +697,11 @@ final class DAQDevice (Specs...): Service
 					if (not (sampling_frequency * count_open!`input` <= MaxSamplingRate ()))
 						assert (0, `combined sampling frequency (` ~(sampling_frequency * count_open!`input`).text~ `) exceeded ` ~MaxSamplingRate.stringof);
 
-					// TODO generating freq and period stuff
+					if (count_open!`output` > 0 && (generating_frequency * generating_period) % 1.0 != 0)
+						assert (0, `generating frequency (` ~generating_frequency.text~ `)`
+							` does not evenly divide generating period (` ~generating_period.text~ `)`
+							` (remainder == ` ~((generating_frequency * generating_period) % 1.0).text~ `)`
+						);
 
 					if (not (history_length >= min_recording_history))
 						assert (0, `history length calculation error`);
@@ -771,7 +778,7 @@ final class DAQDevice (Specs...): Service
 		const @property {/*buffer block sizes}*/
 			size_t block_size (size_t units)
 				{/*...}*/
-					return ((sampling_frequency / capture_frequency).ceil * units).to!size_t;
+					return ((sampling_frequency / capture_frequency) * units).to!size_t;
 				}
 			size_t buffer_size (size_t units)
 				out (result) {/*...}*/
@@ -803,7 +810,7 @@ final class DAQDevice (Specs...): Service
 			auto input_voltage_range = MaxInputVoltageRange ();
 			auto output_voltage_range = MaxOutputVoltageRange ();
 			auto min_recording_history = 1.second;
-			auto _sampling_frequency = MaxSamplingRate () / InputChannels.count;
+			auto min_sampling_frequency = MaxSamplingRate () / InputChannels.count;
 			auto _capture_frequency = 30.hertz;
 			auto _generating_frequency = 30.hertz;
 			auto _generating_period = infinity.seconds;
@@ -924,7 +931,7 @@ final class DAQDevice (Specs...): Service
 			void delegate(uint) callback;
 		}
 		invariant (){/*}*/
-			assert (n_samples_streamed < typeof(n_samples_streamed).max - _sampling_frequency / _capture_frequency,
+			assert (n_samples_streamed < typeof(n_samples_streamed).max - min_sampling_frequency / _capture_frequency,
 				`n_samples_streamed approaching ` ~typeof(n_samples_streamed).stringof~ `.max`
 			);
 		}
@@ -948,9 +955,9 @@ final class DAQDevice (Specs...): Service
 
 				enum isOutputChannels;
 			}
-		struct MaxSamplingRate (uint max__sampling_frequency)
+		struct MaxSamplingRate (uint max_sampling_frequency)
 			{/*...}*/
-				enum rate = max__sampling_frequency.hertz;
+				enum rate = max_sampling_frequency.hertz;
 
 				enum isMaxSamplingRate;
 
@@ -1019,13 +1026,8 @@ void record_for (T)(T daq, Seconds time)
 	{/*...}*/
 		daq.start;
 
-		auto span = 0.seconds;
-
-		while (span < time)
-			{/*...}*/
-				sleep (5.milliseconds);
-				span += 5.milliseconds;
-			}
+		while (daq.duration_of_sample_count (daq.n_samples_streamed) <= time)
+			Thread.sleep (5.milliseconds.to_duration);
 
 		daq.stop;
 	}
@@ -1137,7 +1139,7 @@ struct ForcePlate
 				}
 		}
 		@property {/*torque}*/
-			const torque_z ()
+			const z_torque ()
 				{/*...}*/
 					return zip (
 						force_y.map!(f => f * sensor_offset.x),
@@ -1434,6 +1436,7 @@ unittest {/*...}*/
 }
 /////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+static if (1)
 void main ()
 	{/*...}*/
 		auto daq = new DAQDevice!(
@@ -1454,7 +1457,7 @@ void main ()
 		ForcePlate plate;
 
 		with (daq) {/*settings}*/
-			sampling_frequency = 1.kilohertz;
+			sampling_frequency = 24.kilohertz;
 			capture_frequency = 60.hertz;
 			generating_frequency = 240.hertz;
 
@@ -1489,65 +1492,146 @@ void main ()
 			output[0].generate (t => t % generating_period < 1/generating_frequency? 3.volts : 0.volts);
 			output[1].generate (t => t % generating_period < 1/generating_frequency? 0.volts : 2.volts);
 		}
+		auto timing_light () 
+			{/*...}*/
+				return zip (
+					daq.output[0].sample_by_time[],
+					daq.output[1].sample_by_time[]
+				).map!vector;
+			}
+
+		immutable Δt = 1/daq.capture_frequency;
+		auto n_captures = 0;
 
 		auto file = File (`test_data.dat`, `w`);
 
-		auto blue_led = daq.output[0].sample_by_time;
-		immutable Δt = 1/daq.capture_frequency;
+		auto start_time = cast(DateTime)(Clock.currTime);
+		auto subject = `none`;
+
+		with (daq) {/*write file header}*/
+			file.writefln (
+				"%s\n"
+				"%s\n"
+				"subject: %s\n"
+
+				"device: %s #%X\n"
+				"\tsampling_frequency: %s\n"
+				"\tcapture_frequency: %s\n"
+				"\tgenerating_frequency: %s\n"
+				"\tgenerating_period: %s\n"
+				"\tvoltage_range!`input`: %s\n"
+				"\tvoltage_range!`output`: %s\n"
+				,
+
+				start_time.date.toSimpleString,
+				start_time.timeOfDay.toString,
+				subject,
+
+				daq.Model.name, daq.Serial.number,
+					sampling_frequency.text,
+					capture_frequency.text,
+					generating_frequency.text,
+					generating_period.text,
+					daq.voltage_range!`input`.text,
+					daq.voltage_range!`output`.text,
+			);
+		}
+		void stream_to_file (size_t n)
+			{/*...}*/
+				with (plate) {/*...}*/
+					auto stream = zip (
+						ℕ[0..n], 
+						zip(
+							timing_light[],
+							force[],
+							moment[],
+							surface_moment[],
+							center_of_pressure[],
+							z_torque[],
+						)[$-Δt..$]
+					);
+
+					foreach (τ; stream)
+						{/*...}*/
+							auto tick = τ[0];
+							auto item = τ[1];
+
+							file.writefln (
+								"{%s}\n"
+								"timing_light %s\n"
+								"force %s\n"
+								"moment %s\n"
+								"surface_moment %s\n"
+								"center_of_pressure %s\n"
+								"z_torque %s\n",
+
+								(n_captures*Δt + tick/daq.sampling_frequency).text,
+								item[0].text,
+								item[1].text,
+								item[2].text (`N·m`),
+								item[3].text (`N·m`),
+								item[4].text,
+								item[5].text (`N·m`),
+							);
+						}
+
+					++n_captures;
+				}
+			}
 
 		static if (0)
-		daq.on_capture =x=> file.writeln (zip (blue_led[$-Δt..$], plate.force[$-Δt..$]));
-		
-		auto gfx = new Display;
-		gfx.start; scope (exit) gfx.stop;
-		auto txt = new Scribe (gfx);
+		daq.on_capture = &stream_to_file;
+		else
+		{/*display}*/
+			auto gfx = new Display;
+			gfx.start; scope (exit) gfx.stop;
+			auto txt = new Scribe (gfx);
 
-		bool draw_it;
-		auto min_t = 0.5.seconds;
-		daq.on_capture = (size_t x)
-			{/*...}*/
-				alias writeln = evx.utils.writeln;
-				writeln (ℕ[0..x].length); // REVIEW why do these lengths not match up
-				writeln (plate.force_x[$-Δt..$].length);
-
-				if (daq.recording_length > min_t)
-					draw_it = true;
-			};
+			bool draw_it;
+			auto min_t = 0.5.seconds;
+			daq.on_capture = (size_t x)
+				{/*...}*/
+					if (daq.recording_length > min_t)
+						draw_it = true;
+				};
 
 
-		void draw ()
-			{/*...}*/
-				auto z = (plate.force_x[$-min_t..$].length);
+			void draw ()
+				{/*...}*/
+					auto z = (plate.force_x[$-min_t..$].length);
 
-				plot (plate.force_z[$-min_t..$].versus (ℕ[0..z].map!(i => i/daq.sampling_frequency)))
-					.color (green)
-					.y_axis (`vertical force`, interval (0.newtons, 2000.newtons)) // REVIEW can we do interval (x,y).newtons? maybe using identity_element?
-					.inside ([vector (-0.8,-0.8), vector (0.8, 0.8)].bounding_box)
-					.using (gfx, txt)
-				();
+					plot (plate.force_z[$-min_t..$].versus (ℕ[0..z].map!(i => i/daq.sampling_frequency)))
+						.color (green)
+						.y_axis (`vertical force`, interval (0.newtons, 2000.newtons)) // REVIEW can we do interval (x,y).newtons? maybe using identity_element?
+						.inside ([vector (-0.8,-0.8), vector (0.8, 0.8)].bounding_box)
+						.using (gfx, txt)
+					();
 
-				static if (0)
-				gfx.draw (yellow, circle (0.05, plate.center_of_pressure.back.to_scalar * 2), GeometryMode.t_fan);
+					static if (0)
+					gfx.draw (yellow, circle (0.05, plate.center_of_pressure.back.to_scalar * 2), GeometryMode.t_fan);
 
-				gfx.render;
-			}
+					gfx.render;
+				}
 
 
-		//TEMP
-		foreach (x; 0..8)
-			DAQmx.mock_channel[x] = i => 0.5 * cast(double) sin (π*i/100f)^^2;
+			//TEMP
+			foreach (x; 0..8)
+				DAQmx.mock_channel[x] = i => 0.5 * cast(double) sin (π*i/100f)^^2;
 
-		auto elapsed = 0.seconds;
-		daq.start;
-		while (daq.is_streaming && elapsed < 2.seconds)
-			{/*...}*/
-				if (draw_it)
-					{/*...}*/
-						elapsed += 1/daq.capture_frequency;
+			auto elapsed = 0.seconds;
+			daq.start;
+			while (daq.is_streaming && elapsed < 2.seconds)
+				{/*...}*/
+					if (draw_it)
+						{/*...}*/
+							elapsed += 1/daq.capture_frequency;
 
-						draw ();
-						draw_it = false;
-					}
-			}
-		daq.stop;
+							draw ();
+							draw_it = false;
+						}
+				}
+			daq.stop;
+		}
+
+		daq.record_for (1.second);
 	}

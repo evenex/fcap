@@ -49,9 +49,7 @@ struct DAQmx
 
 								DAQmxBaseGetExtendedErrorInfo (error_string.ptr, error_string.sizeof);
 
-								string assert_msg;
-								try assert_msg ~= `error: call to ` ~function_call_to_string!op (args)~ ` at ` ~file~ `:` ~line.text~ ` failed: ` ~error_string;
-								catch (Exception) assert (0);
+								string assert_msg = `error: call to ` ~function_call_to_string!op (args)~ ` at ` ~file~ `:` ~line.text~ ` failed: ` ~error_string.text;
 
 								assert (0, assert_msg);
 							}
@@ -83,11 +81,10 @@ struct DAQmx
 											import std.algorithm: map, zip;
 											import std.range: array;
 
-											try foreach (signal; zip (mock_channel.byKey, mock_channel.byValue).array
+											foreach (signal; zip (mock_channel.byKey, mock_channel.byValue).array
 												.sort!((a,b) => a[0] < b[0])
 												.map!(τ => τ[1])
 											) read_array[i*stride + (j++)] = signal (i + num_samps_per_chan * sample_counter);
-											catch (Exception) assert (0);
 										}
 
 									++sample_counter;
@@ -107,9 +104,7 @@ struct DAQmx
 											if (split[0].empty)
 												break;
 
-											uint n;
-											try n = split[0][$-1..$].to!uint;
-											catch (Exception) assert (0);
+											uint n = split[0][$-1..$].to!uint;
 
 											if (not (n in mock_channel))
 												{/*provide default}*/
