@@ -40,7 +40,9 @@ private {/*imports}*/
 	alias zip = evx.functional.zip;
 	alias map = evx.functional.map;
 	alias reduce = evx.functional.reduce;
+	alias stride = evx.range.stride;
 	alias Interval = evx.analysis.Interval;
+	alias round = evx.analysis.round;
 	alias seconds = evx.units.seconds;
 }
 
@@ -55,1122 +57,1123 @@ public {/*units}*/
 	alias mm = millimeters;
 	alias ms = milliseconds;
 }
+public {/*daq}*/
+	final class DAQDevice (Specs...): Service
+		{/*...}*/
+			static {/*assertions}*/
+				mixin template check (string specification)
+					{/*...}*/
+						static assert (Filter!(has_trait!(`is` ~specification),	Specs).length > 0, specification~ " missing from DAQDevice declaration");
+						static assert (Filter!(has_trait!(`is` ~specification),	Specs).length < 2, specification~ " ambiguous in DAQDevice declaration");
+					}
 
-alias writeln = evx.utils.writeln;
-
-final class DAQDevice (Specs...): Service
-	{/*...}*/
-		__gshared:
-		static {/*assertions}*/
-			mixin template check (string specification)
-				{/*...}*/
-					static assert (Filter!(has_trait!(`is` ~specification),	Specs).length > 0, specification~ " missing from DAQDevice declaration");
-					static assert (Filter!(has_trait!(`is` ~specification),	Specs).length < 2, specification~ " ambiguous in DAQDevice declaration");
-				}
-
-			mixin check!q{Model};
-			mixin check!q{InputChannels};
-			mixin check!q{OutputChannels};
-			mixin check!q{MaxSamplingRate};
-			mixin check!q{MaxInputVoltageRange};
-			mixin check!q{MaxOutputVoltageRange};
-			mixin check!q{Serial};
-			mixin check!q{InputBufferSize};
-			mixin check!q{OutputBufferSize};
-		}
-		static {/*specs}*/
-			template extract (string specification)
-				{/*...}*/
-					mixin(q{
-						alias } ~specification~ q{ = Filter!(has_trait!(`is` ~specification), Specs)[0];
-					});
-				}
-
-			mixin extract!q{Model};
-			mixin extract!q{InputChannels};
-			mixin extract!q{OutputChannels};
-			mixin extract!q{MaxSamplingRate};
-			mixin extract!q{MaxInputVoltageRange};
-			mixin extract!q{MaxOutputVoltageRange};
-			mixin extract!q{Serial};
-			mixin extract!q{InputBufferSize};
-			mixin extract!q{OutputBufferSize};
-		}
-
-		public:
-		const @property {/*status}*/
-			bool is_ready ()
-				{/*...}*/
-					if (parameters_invalidated)
-						return false;
-
-					if ((sampling_frequency * capture_frequency).to_scalar == 0)
-						return false;
-
-					if (not (buffer.is_ready))
-						return false;
-
-					return true;
-				}
-			bool is_streaming ()
-				{/*...}*/
-					return this.is_running;
-				}
-		}
-		const @property {/*counters}*/
-			Index sample_count ()
-				{/*...}*/
-					return buffer.length / count_open!`input`;
-				}
-				
-			Seconds recording_length ()
-				out (result) {/*...}*/
-					if (buffer.filled)
-						assert (result == history_length,
-							`buffer filled, but recording length (` ~result.text~ `) doesn't match history length (` ~history_length.text~ `)`
-						);
-					else assert (result < history_length,
-						`recording length (` ~result.text~ `) exceeded history length (` ~history_length.text~ `)`
-					);
-				}
-				body {/*...}*/
-					return sample_count / sampling_frequency;
-				}
-
-			int count_open (string channel_type)()
-				{/*...}*/
-					auto n = 0;
-
-					foreach (channel; mixin(channel_type~ q{_channels}))
-						if (channel.is_open)
-							++n;
-
-					return n;
-				}
-		}
-		@property {/*parameters}*/
-			Hertz sampling_frequency () const
-				{/*...}*/
-					return (min_sampling_frequency / capture_frequency).ceil * capture_frequency;
-				}
-			void sampling_frequency (Hertz frequency)
-				{/*...}*/
-					min_sampling_frequency = frequency;
-					
-					invalidate_parameters;
-				}
-
-			Hertz capture_frequency () const
-				{/*...}*/
-					return _capture_frequency;
-				}
-			void capture_frequency (Hertz frequency)
-				{/*...}*/
-					_capture_frequency = frequency;
-
-					invalidate_parameters;
-				}
-
-			Hertz generating_frequency () const
-				{/*...}*/
-					return _generating_frequency;
-				}
-			void generating_frequency (Hertz frequency)
-				{/*...}*/
-					_generating_frequency = frequency;
-
-					invalidate_parameters;
-				}
-
-			Seconds generating_period () const
-				{/*...}*/
-					return _generating_period;
-				}
-			void generating_period (Seconds period)
-				{/*...}*/
-					_generating_period = period;
-
-					invalidate_parameters;
-				}
-
-			Seconds history_length () const
-				out (result) {/*...}*/
-					assert (result >= min_recording_history, 
-						`history length calculation error`
-					);
-				}
-				body {/*...}*/
-					return buffer_size (in_samples) / sampling_frequency;
-				}
-			void history_length (Seconds time)
-				{/*...}*/
-					min_recording_history = time;
-
-					invalidate_parameters;
-				}
-
-			Interval!Volts voltage_range (string channel_type)() const
-				{/*...}*/
-					mixin(q{
-						return } ~channel_type~ q{_voltage_range;
-					});
-				}
-			void voltage_range (string channel_type)(Interval!Volts range)
-				in {/*...}*/
-					mixin(q{
-						alias MaxVoltageRange = Max} ~channel_type.capitalize~ q{VoltageRange;
-					});
-
-					assert (range.is_contained_in (MaxVoltageRange ()), 
-						range.text~ ` exceeded ` ~MaxVoltageRange.stringof~ ` for ` ~Model.name
-					);
-				}
-				body {/*...}*/
-					mixin(q{
-						} ~channel_type~ q{_voltage_range = range;
-					});
-				}
-		}
-		const {/*time ↔ index}*/
-			uint index_at_time (Seconds t)
-				in {/*...}*/
-					assert (t >= 0.seconds, `cannot index with negative time (` ~t.text~ `)`);
-				}
-				body {/*...}*/
-					alias h = recording_length;
-
-					auto x = sample_count * t/h;
-
-					return cast(uint)x.round;
-				}
-			Seconds time_at_index (size_t i)
-				{/*...}*/
-					return i * recording_length / sample_count;
-				}
-
-			uint n_samples_in (Seconds seconds)
-				{/*...}*/
-					uint n_samples;
-
-					return (seconds * sampling_frequency).round.to!uint;
-				}
-			Seconds duration_of_sample_count (uint n_samples)
-				{/*...}*/
-					return n_samples / sampling_frequency;
-				}
-		}
-		public:
-		public {/*controls}*/
-			void reset ()
-				out {/*...}*/
-					assert (this.is_ready || count_open!`input` == 0, `DAQ reset error`);
-				}
-				body {/*...}*/
-					if (this.is_streaming)
-						stop;
-
-					validate_parameters;
-					
-					initialize_channels;
-
-					buffer = RingBuffer (buffer_size (in_doubles));
-
-					n_samples_streamed = 0;
-				}
-		}
-		public {/*channels}*/
-			public {/*open/close}*/
-				private mixin template Channels (string channel_type)
+				mixin check!q{Model};
+				mixin check!q{InputChannels};
+				mixin check!q{OutputChannels};
+				mixin check!q{MaxSamplingRate};
+				mixin check!q{MaxInputVoltageRange};
+				mixin check!q{MaxOutputVoltageRange};
+				mixin check!q{Serial};
+				mixin check!q{InputBufferSize};
+				mixin check!q{OutputBufferSize};
+			}
+			static {/*specs}*/
+				template extract (string specification)
 					{/*...}*/
 						mixin(q{
-							alias Channels = } ~channel_type.capitalize~ q{Channels;
+							alias } ~specification~ q{ = Filter!(has_trait!(`is` ~specification), Specs)[0];
 						});
 					}
 
-				void open_channel (string channel_type)(Index i)
-					in {/*...}*/
-						mixin Channels!channel_type;
-
-						assert (i < Channels.count, `only ` ~Channels.stringof~ ` available on ` ~Model.name);
-					}
-					body {/*...}*/
-						mixin(q{
-							} ~channel_type~ q{_channels[i].open = true;
-						});
-
-						invalidate_parameters;
-					}
-
-				void close_channel (string channel_type)(Index i)
-					in {/*...}*/
-						mixin Channels!channel_type;
-
-						assert (i < Channels.count, `only ` ~Channels.stringof~ ` available on ` ~Model.name);
-					}
-					body {/*...}*/
-						mixin(q{
-							} ~channel_type~ q{_channels[i].open = false;
-						});
-
-						invalidate_parameters;
-					}
-
-				void open_channels (string channel_type)(Index[] indices...)
-					{/*...}*/
-						foreach (i; indices)
-							open_channel!channel_type (i);
-					}
-				void open_channels (string channel_type)()
-					{/*...}*/
-						mixin Channels!channel_type;
-
-						foreach (i; 0..Channels.count)
-							open_channel!channel_type (i);
-					}
-
-				void close_channels (string channel_type)(Index[] indices...)
-					{/*...}*/
-						foreach (i; indices)
-							close_channel!channel_type (i);
-					}
-				void close_channels (string channel_type)()
-					{/*...}*/
-						mixin Channels!channel_type;
-
-						foreach (i; 0..Channels.count)
-							close_channel!channel_type (i);
-					}
+				mixin extract!q{Model};
+				mixin extract!q{InputChannels};
+				mixin extract!q{OutputChannels};
+				mixin extract!q{MaxSamplingRate};
+				mixin extract!q{MaxInputVoltageRange};
+				mixin extract!q{MaxOutputVoltageRange};
+				mixin extract!q{Serial};
+				mixin extract!q{InputBufferSize};
+				mixin extract!q{OutputBufferSize};
 			}
 
-			const @property input ()
-				{/*...}*/
-					return input_channels[];
-				}
-			@property output ()
-				{/*...}*/
-					return output_channels[];
-				}
+			public:
+			pure const @property {/*status}*/
+				bool is_ready ()
+					{/*...}*/
+						if (parameters_invalidated)
+							return false;
 
-			class Input
-				{/*...}*/
-					const is_open ()
-						{/*...}*/
-							return open;
-						}
+						if ((sampling_frequency * capture_frequency).to_scalar == 0)
+							return false;
 
-					const sample_by_index ()
-						{/*...}*/
-							return stream_from (&sample_at_index, &sample_count);
-						}
-					const sample_by_time ()
-						{/*...}*/
-							return stream_from (&sample_at_time, &recording_length).at (&sampling_frequency);
-						}
+						if (not (buffer.is_ready))
+							return false;
 
-					const sample_at_index (Index i)
-						in {/*...}*/
-							assert (this.is_open, 
-								`attempted to access closed channel`
-							);
-							assert (i < sample_count,
-								`access (` ~i.text~ `) out of bounds (` ~sample_count.text~ `)`
-							);
-						}
-						body {/*...}*/
-							return buffer[offset + stride * i].volts;
-						}
-					const sample_at_time (Seconds t)
-						in {/*...}*/
-							assert (this.is_open, 
-								`attempted to access closed channel`
-							);
-							assert (t.between (0.seconds, recording_length),
-								`access (` ~t.text~ `) out of bounds (` ~interval (0.seconds, recording_length).text~ `)`
-							);
-						}
-						body {/*...}*/
-							return sample_at_index (index_at_time (t));
-						}
-
-					private:
-					private {/*data}*/
-						bool open;
-						size_t offset;
-						size_t stride;
+						return true;
 					}
+				bool is_streaming ()
+					{/*...}*/
+						return this.is_running;
+					}
+			}
+			pure const @property {/*counters}*/
+				Index sample_count ()
+					{/*...}*/
+						return buffer.length / count_open!`input`;
+					}
+					
+				Seconds recording_length ()
+					out (result) {/*...}*/
+						debug {/*...}*/
+							if (buffer.filled)
+								assert (result == history_length,
+									`buffer filled, but recording length (` ~result.text~ `) doesn't match history length (` ~history_length.text~ `)`
+								);
+							else assert (result < history_length,
+								`recording length (` ~result.text~ `) exceeded history length (` ~history_length.text~ `)`
+							);
+						}
+					}
+					body {/*...}*/
+						return sample_count / sampling_frequency;
+					}
+
+				int count_open (string channel_type)()
+					{/*...}*/
+						auto n = 0;
+
+						foreach (channel; mixin(channel_type~ q{_channels}))
+							if (channel.is_open)
+								++n;
+
+						return n;
+					}
+			}
+			pure @property {/*parameters}*/
+				Hertz sampling_frequency () const
+					{/*...}*/
+						return (min_sampling_frequency / capture_frequency).ceil * capture_frequency;
+					}
+				void sampling_frequency (Hertz frequency)
+					{/*...}*/
+						min_sampling_frequency = frequency;
+						
+						invalidate_parameters;
+					}
+
+				Hertz capture_frequency () const
+					{/*...}*/
+						return _capture_frequency;
+					}
+				void capture_frequency (Hertz frequency)
+					{/*...}*/
+						_capture_frequency = frequency;
+
+						invalidate_parameters;
+					}
+
+				Hertz generating_frequency () const
+					{/*...}*/
+						return _generating_frequency;
+					}
+				void generating_frequency (Hertz frequency)
+					{/*...}*/
+						_generating_frequency = frequency;
+
+						invalidate_parameters;
+					}
+
+				Seconds generating_period () const
+					{/*...}*/
+						return _generating_period;
+					}
+				void generating_period (Seconds period)
+					{/*...}*/
+						_generating_period = period;
+
+						invalidate_parameters;
+					}
+
+				Seconds history_length () const
+					out (result) {/*...}*/
+						assert (result >= min_recording_history, 
+							`history length calculation error`
+						);
+					}
+					body {/*...}*/
+						return buffer_size (in_samples) / sampling_frequency;
+					}
+				void history_length (Seconds time)
+					{/*...}*/
+						min_recording_history = time;
+
+						invalidate_parameters;
+					}
+
+				Interval!Volts voltage_range (string channel_type)() const
+					{/*...}*/
+						mixin(q{
+							return } ~channel_type~ q{_voltage_range;
+						});
+					}
+				void voltage_range (string channel_type)(Interval!Volts range)
+					in {/*...}*/
+						mixin(q{
+							alias MaxVoltageRange = Max} ~channel_type.capitalize~ q{VoltageRange;
+						});
+
+						debug assert (range.is_contained_in (MaxVoltageRange ()), 
+							range.text~ ` exceeded ` ~MaxVoltageRange.stringof~ ` for ` ~Model.name
+						);
+					}
+					body {/*...}*/
+						mixin(q{
+							} ~channel_type~ q{_voltage_range = range;
+						});
+					}
+			}
+			pure const {/*time ↔ index}*/
+				uint index_at_time (Seconds t)
+					in {/*...}*/
+						debug assert (t >= 0.seconds, `cannot index with negative time (` ~t.text~ `)`);
+					}
+					body {/*...}*/
+						alias h = recording_length;
+
+						auto x = sample_count * t/h;
+
+						return cast(uint)x.round;
+					}
+				Seconds time_at_index (size_t i)
+					{/*...}*/
+						return i * recording_length / sample_count;
+					}
+
+				uint n_samples_in (Seconds seconds)
+					{/*...}*/
+						uint n_samples;
+
+						return (seconds * sampling_frequency).round.to!uint;
+					}
+				Seconds duration_of_sample_count (size_t n_samples)
+					{/*...}*/
+						return n_samples / sampling_frequency;
+					}
+			}
+			public:
+			public {/*controls}*/
+				void reset ()
+					out {/*...}*/
+						assert (this.is_ready || count_open!`input` == 0, `DAQ reset error`);
+					}
+					body {/*...}*/
+						if (this.is_streaming)
+							stop;
+
+						validate_parameters;
+						
+						initialize_channels;
+
+						buffer = RingBuffer (buffer_size (in_doubles));
+
+						n_samples_streamed = 0;
+					}
+			}
+			public {/*channels}*/
+				public {/*open/close}*/
+					private mixin template Channels (string channel_type)
+						{/*...}*/
+							mixin(q{
+								alias Channels = } ~channel_type.capitalize~ q{Channels;
+							});
+						}
+
+					void open_channel (string channel_type)(Index i)
+						in {/*...}*/
+							mixin Channels!channel_type;
+
+							assert (i < Channels.count, `only ` ~Channels.stringof~ ` available on ` ~Model.name);
+						}
+						body {/*...}*/
+							mixin(q{
+								} ~channel_type~ q{_channels[i].open = true;
+							});
+
+							invalidate_parameters;
+						}
+
+					void close_channel (string channel_type)(Index i)
+						in {/*...}*/
+							mixin Channels!channel_type;
+
+							assert (i < Channels.count, `only ` ~Channels.stringof~ ` available on ` ~Model.name);
+						}
+						body {/*...}*/
+							mixin(q{
+								} ~channel_type~ q{_channels[i].open = false;
+							});
+
+							invalidate_parameters;
+						}
+
+					void open_channels (string channel_type)(Index[] indices...)
+						{/*...}*/
+							foreach (i; indices)
+								open_channel!channel_type (i);
+						}
+					void open_channels (string channel_type)()
+						{/*...}*/
+							mixin Channels!channel_type;
+
+							foreach (i; 0..Channels.count)
+								open_channel!channel_type (i);
+						}
+
+					void close_channels (string channel_type)(Index[] indices...)
+						{/*...}*/
+							foreach (i; indices)
+								close_channel!channel_type (i);
+						}
+					void close_channels (string channel_type)()
+						{/*...}*/
+							mixin Channels!channel_type;
+
+							foreach (i; 0..Channels.count)
+								close_channel!channel_type (i);
+						}
 				}
-			class Output
-				{/*...}*/
-					const is_open ()
-						{/*...}*/
-							return open;
-						}
 
-					const sample_by_index ()
-						{/*...}*/
-							return stream_from (&sample_at_index, &sample_count);
-						}
-					const sample_by_time ()
-						{/*...}*/
-							return stream_from (&sample_at_time, &recording_length).at (&sampling_frequency); // REVIEW constant interpolation works because of this... here is explicit upsampling, this is what makes it work despite the lack of explicit interpolation. if i changed this to generation_frequency, i would get a range measure mismatch error
-						}
+				const @property input ()
+					{/*...}*/
+						return input_channels[];
+					}
+				@property output ()
+					{/*...}*/
+						return output_channels[];
+					}
 
-					const sample_at_index (Index i)
-						in {/*...}*/
-							assert (this.is_open,
-								`attempted to access closed channel`
-							);
-						}
-						body {/*...}*/
-							alias period = generating_period;
+				class Input
+					{/*...}*/
+						pure:
 
-							if (period.is_infinite || n_samples_streamed < n_samples_in (period))
-								return generator (time_at_index (i));
-							else return generator (time_at_index ((i + n_samples_streamed) % n_samples_in (period)));
-						}
-					const sample_at_time (Seconds t)
-						in {/*...}*/
-							assert (this.is_open,
-								`attempted to access closed channel`
-							);
-							assert (t.between (0.seconds, recording_length),
-								`access (` ~t.text~ `) out of bounds (` ~interval (0.seconds, recording_length).text~ `)`
-							);
-						}
-						body {/*...}*/
-							alias period = generating_period;
-
-							if (period.is_infinite)
-								return generator (t);
-							else return generator (t % period);
-						}
-
-					public:
-					public {/*ctor}*/
-						this ()
+						const is_open ()
 							{/*...}*/
-								generator =x=> 0.volts;
+								return open;
 							}
-					}
-					public {/*settings}*/
-						auto generate (Volts delegate(Seconds) generator)
+
+						const sample_by_index ()
 							{/*...}*/
-								this.generator = generator;
-
-								invalidate_parameters;
-
-								return this;
+								return stream_from (&sample_at_index, &sample_count);
 							}
-					}
-					private:
-					private {/*data}*/
-						Volts delegate(Seconds) generator;
+						const sample_by_time ()
+							{/*...}*/
+								return stream_from (&sample_at_time, &recording_length).at (&sampling_frequency);
+							}
 
-						bool open;
-						size_t offset;
-						size_t stride;
-					}
-					private {/*upload}*/
-						auto upload (scope double[] samples)
+						const sample_at_index (Index i)
 							in {/*...}*/
-								assert (this.is_open, `attempted to access closed channel`);
+								assert (this.is_open, 
+									`attempted to access closed channel`
+								);
+								assert (i < sample_count,
+									`access (` ~i.text~ `) out of bounds (` ~sample_count.text~ `)`
+								);
 							}
 							body {/*...}*/
-								//foreach (size_t i, ref sample; samples[offset..$].stride (this.stride)) // OUTSIDE BUG Error: cannot infer argument types
-								for (size_t i = 0; offset + i*stride < samples.length; ++i)
-									samples[offset + i*stride] = generator (i/generating_frequency).to_scalar;
+								return buffer[offset + stride * i].volts;
 							}
+						const sample_at_time (Seconds t)
+							in {/*...}*/
+								debug assert (this.is_open, 
+									`attempted to access closed channel`
+								);
+								debug assert (t.between (0.seconds, recording_length),
+									`access (` ~t.text~ `) out of bounds (` ~interval (0.seconds, recording_length).text~ `)`
+								);
+							}
+							body {/*...}*/
+								return sample_at_index (index_at_time (t));
+							}
+
+						private:
+						private {/*data}*/
+							bool open;
+							size_t offset;
+							size_t stride;
+						}
 					}
-				}
-		}
-		public {/*callbacks}*/
-			void on_capture (void delegate(uint n_samples_streamed) callback)
-				{/*...}*/
-					this.callback = callback;
-				}
-		}
-		public {/*ctor}*/
-			this ()
-				{/*...}*/
-					version (LIVE)
-					{/*identify device}*/
-						auto lsdaq = pipeShell (`lsdaq`).stdout.byLine.drop (3);
+				class Output
+					{/*...}*/
+						pure:
 
-						if (not (lsdaq.front.canFind (`Dev`)))
-							assert (0, `no DAQ devices detected`);
-
-						foreach (device_info; lsdaq)
+						const is_open ()
 							{/*...}*/
-								if (not (device_info.canFind (`Dev`)))
-									assert (0, `couldn't find ` ~Model.name~ ` #` ~Serial.number.text~ ` among connected DAQ devices`);
-
-
-								this.device_id = device_info.find (`Dev`)[0..4].text;
-								uint serial_number;
-
-								DAQmx.GetDevSerialNum (device_id, &serial_number);
-
-								if (serial_number == Serial.number)
-									break;
+								return open;
 							}
-					}
 
-					foreach (ref channel; input_channels)
-						channel = new Input;
+						const sample_by_index ()
+							{/*...}*/
+								return stream_from (&sample_at_index, &sample_count);
+							}
+						const sample_by_time ()
+							{/*...}*/
+								return stream_from (&sample_at_time, &recording_length).at (&sampling_frequency); // REVIEW constant interpolation works because of this... here is explicit upsampling, this is what makes it work despite the lack of explicit interpolation. if i changed this to generation_frequency, i would get a range measure mismatch error
+							}
 
-					foreach (ref channel; output_channels)
-						channel = new Output;
-				}
-		}
-		protected:
-		@Service shared override {/*}*/
-			bool initialize ()
-				{/*...}*/
-					auto ready_channels ()
-						{/*...}*/
-							if (stream_is & capture)
-								with (cast()this) {/*...}*/
-									DAQmx.CreateTask (``, &input_task);
+						const sample_at_index (Index i)
+							in {/*...}*/
+								assert (this.is_open,
+									`attempted to access closed channel`
+								);
+							}
+							body {/*...}*/
+								alias period = generating_period;
 
-									DAQmx.CreateAIVoltageChan (input_task, 
-										channel_string!`input`, ``, 
-										DAQmx_Val_Cfg_Default, 
-										input_voltage_range.min.to_scalar, 
-										input_voltage_range.max.to_scalar, 
-										DAQmx_Val_Volts, 
-										null
-									);
+								if (period.is_infinite || n_samples_streamed < n_samples_in (period))
+									return generator (time_at_index (i));
+								else return generator (time_at_index ((i + n_samples_streamed) % n_samples_in (period)));
+							}
+						const sample_at_time (Seconds t)
+							in {/*...}*/
+								debug assert (this.is_open,
+									`attempted to access closed channel`
+								);
+								debug assert (t.between (0.seconds, recording_length),
+									`access (` ~t.text~ `) out of bounds (` ~interval (0.seconds, recording_length).text~ `)`
+								);
+							}
+							body {/*...}*/
+								alias period = generating_period;
 
-									DAQmx.CfgSampClkTiming (input_task, 
-										`OnboardClock`, 
-										sampling_frequency.to_scalar, 
-										DAQmx_Val_Rising, 
-										DAQmx_Val_ContSamps, 
-										0
-									);
+								if (period.is_infinite)
+									return generator (t);
+								else return generator (t % period);
+							}
 
-									DAQmx.CfgDigEdgeStartTrig (input_task, 
-										`/` ~device_id~ `/PFI0`, 
-										DAQmx_Val_Rising
-									);
-
-									DAQmx.StartTask (input_task);
+						public:
+						public {/*ctor}*/
+							this ()
+								{/*...}*/
+									generator =x=> 0.volts;
 								}
-							if (stream_is & generate)
-								with (cast()this) {/*...}*/
-									DAQmx.CreateTask (``, &output_task);
+						}
+						public {/*settings}*/
+							auto generate (Volts delegate(Seconds) pure generator)
+								{/*...}*/
+									this.generator = generator;
 
-									DAQmx.CreateAOVoltageChan (output_task, 
-										channel_string!`output`, ``,
-										output_voltage_range.min.to_scalar, 
-										output_voltage_range.max.to_scalar, 
-										DAQmx_Val_Volts,
-										null
-									);
+									invalidate_parameters;
 
-									DAQmx.CfgSampClkTiming (output_task, 
-										`OnboardClock`, 
-										generating_frequency.to_scalar, 
-										DAQmx_Val_Rising, 
-										DAQmx_Val_ContSamps, 
-										0
-									);
+									return this;
+								}
+						}
+						private:
+						private {/*data}*/
+							Volts delegate(Seconds) generator;
 
-									DAQmx.CfgDigEdgeStartTrig (output_task,
-										`/` ~device_id~ `/PFI0`,
-										DAQmx_Val_Rising
-									);
+							bool open;
+							size_t offset;
+							size_t stride;
+						}
+						private {/*upload}*/
+							auto upload (scope double[] samples)
+								in {/*...}*/
+									assert (this.is_open, `attempted to access closed channel`);
+								}
+								body {/*...}*/
+									//foreach (size_t i, ref sample; samples[offset..$].stride (this.stride)) // OUTSIDE BUG Error: cannot infer argument types
+									for (size_t i = 0; offset + i*stride < samples.length; ++i)
+										samples[offset + i*stride] = generator (i/generating_frequency).to_scalar;
+								}
+						}
+					}
+			}
+			public {/*callbacks}*/
+				void on_capture (void delegate(uint n_samples_streamed) callback)
+					{/*...}*/
+						this.callback = callback;
+					}
+			}
+			public {/*ctor}*/
+				this ()
+					{/*...}*/
+						version (LIVE)
+						{/*identify device}*/
+							auto lsdaq = pipeShell (`lsdaq`).stdout.byLine.drop (3);
 
-									{/*upload samples}*/
-										auto n_samples = (generating_period * generating_frequency).to!size_t;
+							if (not (lsdaq.front.canFind (`Dev`)))
+								assert (0, `no DAQ devices detected`);
 
-										assert (n_samples * count_open!`output` < OutputBufferSize (),
-											`number of output samples (` ~(n_samples * count_open!`output`).text~ `) exceeded ` ~OutputBufferSize.stringof
-										);
+							foreach (device_info; lsdaq)
+								{/*...}*/
+									if (not (device_info.canFind (`Dev`)))
+										assert (0, `couldn't find ` ~Model.name~ ` #` ~Serial.number.text~ ` among connected DAQ devices`);
 
-										scope samples = new double[n_samples * count_open!`output`];
 
-										foreach (channel; output_channels[])
-											if (channel.is_open)
-												channel.upload (samples);
+									this.device_id = device_info.find (`Dev`)[0..4].text;
+									uint serial_number;
 
-										foreach (sample; samples)
-											assert (sample.volts.is_contained_in (output_voltage_range),
-												`output (` ~sample.text~ `) exceeded voltage range (` ~output_voltage_range.text~ `)` 
-											);
+									DAQmx.GetDevSerialNum (device_id, &serial_number);
 
-										enum auto_start = false;
-										enum timeout = 5.seconds;
-										int n_samples_written;
+									if (serial_number == Serial.number)
+										break;
+								}
+						}
 
-										DAQmx.WriteAnalogF64 (output_task,
-											n_samples,
-											auto_start,
-											timeout.to_scalar,
-											DAQmx_Val_GroupByScanNumber,
-											samples.ptr,
-											&n_samples_written,
+						foreach (ref channel; input_channels)
+							channel = new Input;
+
+						foreach (ref channel; output_channels)
+							channel = new Output;
+					}
+			}
+			protected:
+			@Service shared override {/*}*/
+				bool initialize ()
+					{/*...}*/
+						auto ready_channels ()
+							{/*...}*/
+								if (stream_is & capture)
+									with (cast()this) {/*...}*/
+										DAQmx.CreateTask (``, &input_task);
+
+										DAQmx.CreateAIVoltageChan (input_task, 
+											channel_string!`input`, ``, 
+											DAQmx_Val_Cfg_Default, 
+											input_voltage_range.min.to_scalar, 
+											input_voltage_range.max.to_scalar, 
+											DAQmx_Val_Volts, 
 											null
 										);
 
-										version (LIVE)
-										assert (n_samples_written == n_samples);
+										DAQmx.CfgSampClkTiming (input_task, 
+											`OnboardClock`, 
+											sampling_frequency.to_scalar, 
+											DAQmx_Val_Rising, 
+											DAQmx_Val_ContSamps, 
+											0
+										);
+
+										DAQmx.CfgDigEdgeStartTrig (input_task, 
+											`/` ~device_id~ `/PFI0`, 
+											DAQmx_Val_Rising
+										);
+
+										DAQmx.StartTask (input_task);
 									}
+								if (stream_is & generate)
+									with (cast()this) {/*...}*/
+										DAQmx.CreateTask (``, &output_task);
 
-									DAQmx.StartTask (output_task);
-								}
-						}
-					auto start_trigger ()
-						{/*...}*/
-							TaskHandle trigger_task;
+										DAQmx.CreateAOVoltageChan (output_task, 
+											channel_string!`output`, ``,
+											output_voltage_range.min.to_scalar, 
+											output_voltage_range.max.to_scalar, 
+											DAQmx_Val_Volts,
+											null
+										);
 
-							DAQmx.CreateTask (``, &trigger_task);
+										DAQmx.CfgSampClkTiming (output_task, 
+											`OnboardClock`, 
+											generating_frequency.to_scalar, 
+											DAQmx_Val_Rising, 
+											DAQmx_Val_ContSamps, 
+											0
+										);
 
-							DAQmx.CreateDOChan (trigger_task, device_id~ `/port1/line0`, ``, DAQmx_Val_ChanPerLine);
+										DAQmx.CfgDigEdgeStartTrig (output_task,
+											`/` ~device_id~ `/PFI0`,
+											DAQmx_Val_Rising
+										);
 
-							auto high = ubyte.max;
-							auto timeout = 0.0;
-							enum auto_start = true;
-							int n_samples_written;
-							DAQmx.WriteDigitalU8 (trigger_task, 1, auto_start, timeout, DAQmx_Val_GroupByScanNumber, &high, &n_samples_written, null);
+										{/*upload samples}*/
+											auto n_samples = (generating_period * generating_frequency).to!size_t;
 
-							high = 0;
-							DAQmx.WriteDigitalU8 (trigger_task, 1, auto_start, timeout, DAQmx_Val_GroupByScanNumber, &high, &n_samples_written, null);
+											assert (n_samples * count_open!`output` < OutputBufferSize (),
+												`number of output samples (` ~(n_samples * count_open!`output`).text~ `) exceeded ` ~OutputBufferSize.stringof
+											);
 
-							DAQmx.StopTask (trigger_task);
-							DAQmx.ClearTask (trigger_task);
-						}
+											scope samples = new double[n_samples * count_open!`output`];
 
-					////
+											foreach (channel; output_channels[])
+												if (channel.is_open)
+													channel.upload (samples);
 
-					(cast()this).reset;
+											foreach (sample; samples)
+												assert (sample.volts.is_contained_in (output_voltage_range),
+													`output (` ~sample.text~ `) exceeded voltage range (` ~output_voltage_range.text~ `)` 
+												);
 
-					ready_channels;
+											enum auto_start = false;
+											enum timeout = 5.seconds;
+											int n_samples_written;
 
-					start_trigger;
+											DAQmx.WriteAnalogF64 (output_task,
+												n_samples,
+												auto_start,
+												timeout.to_scalar,
+												DAQmx_Val_GroupByScanNumber,
+												samples.ptr,
+												&n_samples_written,
+												null
+											);
 
-					return true;
-				}
-			bool process ()
-				{/*...}*/
-					if (stream_is & capture)
-						capture_block;
-					else Thread.sleep ((1 / (cast()this).capture_frequency).to_duration);
+											version (LIVE)
+											assert (n_samples_written == n_samples);
+										}
 
-					if (callback !is null)
-						with (cast()this) callback (block_size (in_samples));
+										DAQmx.StartTask (output_task);
+									}
+							}
+						auto start_trigger ()
+							{/*...}*/
+								TaskHandle trigger_task;
 
-					return true;
-				}
-			bool listen ()
-				{/*...}*/
-					return false;
-				}
-			bool terminate ()
-				{/*...}*/
-					void terminate (ref TaskHandle task_handle)
-						{/*...}*/
-							DAQmx.StopTask (task_handle);
-							DAQmx.ClearTask (task_handle);
-							task_handle = null;
-						}
+								DAQmx.CreateTask (``, &trigger_task);
 
-					///
+								DAQmx.CreateDOChan (trigger_task, device_id~ `/port1/line0`, ``, DAQmx_Val_ChanPerLine);
 
-					if (stream_is & capture)
-						terminate (input_task);
+								auto high = ubyte.max;
+								auto timeout = 0.0;
+								enum auto_start = true;
+								int n_samples_written;
+								DAQmx.WriteDigitalU8 (trigger_task, 1, auto_start, timeout, DAQmx_Val_GroupByScanNumber, &high, &n_samples_written, null);
 
-					if (stream_is & generate)
-						terminate (output_task);
+								high = 0;
+								DAQmx.WriteDigitalU8 (trigger_task, 1, auto_start, timeout, DAQmx_Val_GroupByScanNumber, &high, &n_samples_written, null);
 
-					return true;
-				}
-			const string name ()
-				{/*...}*/
-					return DAQDevice.stringof;
-				}
-		}
-		private:
-		private {/*parameter validation}*/
-			void validate_parameters ()
-				{/*...}*/
-					if (not (sampling_frequency * count_open!`input` <= MaxSamplingRate ()))
-						assert (0, `combined sampling frequency (` ~(sampling_frequency * count_open!`input`).text~ `) exceeded ` ~MaxSamplingRate.stringof);
+								DAQmx.StopTask (trigger_task);
+								DAQmx.ClearTask (trigger_task);
+							}
 
-					if (count_open!`output` > 0 && (generating_frequency * generating_period) % 1.0 != 0)
-						assert (0, `generating frequency (` ~generating_frequency.text~ `)`
-							` does not evenly divide generating period (` ~generating_period.text~ `)`
-							` (remainder == ` ~((generating_frequency * generating_period) % 1.0).text~ `)`
+						////
+
+						(cast()this).reset;
+
+						ready_channels;
+
+						start_trigger;
+
+						return true;
+					}
+				bool process ()
+					{/*...}*/
+						if (stream_is & capture)
+							capture_block;
+						else Thread.sleep ((1 / (cast()this).capture_frequency).to_duration);
+
+						if (callback !is null)
+							with (cast()this) callback (block_size (in_samples));
+
+						return true;
+					}
+				bool listen ()
+					{/*...}*/
+						return false;
+					}
+				bool terminate ()
+					{/*...}*/
+						void terminate (ref shared TaskHandle task_handle)
+							{/*...}*/
+								DAQmx.StopTask (cast(TaskHandle)task_handle);
+								DAQmx.ClearTask (cast(TaskHandle)task_handle); // REVIEW sharing
+								task_handle = null;
+							}
+
+						///
+
+						if (stream_is & capture)
+							terminate (input_task);
+
+						if (stream_is & generate)
+							terminate (output_task);
+
+						return true;
+					}
+				const string name ()
+					{/*...}*/
+						return DAQDevice.stringof;
+					}
+			}
+			private:
+			private {/*parameter validation}*/
+				void validate_parameters ()
+					{/*...}*/
+						if (not (sampling_frequency * count_open!`input` <= MaxSamplingRate ()))
+							assert (0, `combined sampling frequency (` ~(sampling_frequency * count_open!`input`).text~ `) exceeded ` ~MaxSamplingRate.stringof);
+
+						if (count_open!`output` > 0 && (generating_frequency * generating_period) % 1.0 != 0)
+							assert (0, `generating frequency (` ~generating_frequency.text~ `)`
+								` does not evenly divide generating period (` ~generating_period.text~ `)`
+								` (remainder == ` ~((generating_frequency * generating_period) % 1.0).text~ `)`
+							);
+
+						if (not (history_length >= min_recording_history))
+							assert (0, `history length calculation error`);
+							
+						if (not (voltage_range!`input`.is_contained_in (MaxInputVoltageRange ())))
+							assert (0, `input voltage (` ~voltage_range!`input`.text~ `) exceeded ` ~MaxInputVoltageRange.stringof);
+
+						if (not (capture_frequency <= sampling_frequency))
+							assert (0, `capture frequency (` ~capture_frequency.text~ `) exceeded sampling frequency (` ~sampling_frequency.text~ `)`);
+
+						if (not (buffer_size (in_samples) % block_size (in_samples) == 0))
+							assert (0, `buffer (` ~buffer_size (in_samples).text~ `) not evenly divisible into blocks (` ~block_size (in_samples).text~ `)`);
+
+						parameters_invalidated = false;
+					}
+				void invalidate_parameters ()
+					in {/*...}*/
+						assert (not (is_streaming), `attempted to alter device parameters while streaming in progress`);
+					}
+					body {/*...}*/
+						parameters_invalidated = true;
+					}
+				bool parameters_invalidated;
+			}
+			shared {/*data streaming}*/
+				enum {capture = 0x1, generate = 0x2}
+
+				auto stream_is ()
+					{/*...}*/
+						auto n_in = (cast()this).count_open!`input`;
+						auto n_out = (cast()this).count_open!`output`;
+
+						if (n_out == 0 && n_in > 0)
+							return capture;
+						else if (n_in == 0 && n_out > 0)
+							return generate;
+						else if (n_in > 0 && n_out > 0)
+							return (generate | capture);
+						else assert (0, `no channels open`);
+					}
+
+				void capture_block ()
+					in {/*...}*/
+						assert ((cast()this).is_streaming, `attempted to capture data while not streaming`);
+					}
+					body {/*...}*/
+						int n_samples_read = 0;
+
+						auto timeout = 5.seconds;
+
+						with (cast()this) 
+						DAQmx.ReadAnalogF64 (input_task,
+							block_size (in_samples),
+							timeout.to_scalar,
+							DAQmx_Val_GroupByScanNumber,
+							buffer.input,
+							buffer_size (in_samples),
+							&n_samples_read,
+							null
 						);
 
-					if (not (history_length >= min_recording_history))
-						assert (0, `history length calculation error`);
-						
-					if (not (voltage_range!`input`.is_contained_in (MaxInputVoltageRange ())))
-						assert (0, `input voltage (` ~voltage_range!`input`.text~ `) exceeded ` ~MaxInputVoltageRange.stringof);
+						with (cast()this) {/*advance buffer}*/
+							version (LIVE)
+							assert (n_samples_read == block_size (in_samples),
+								`incorrect number of samples recorded (` ~n_samples_read.text~ `, ` ~block_size (in_samples).text~ ` expected)`
+							);
 
-					if (not (capture_frequency <= sampling_frequency))
-						assert (0, `capture frequency (` ~capture_frequency.text~ `) exceeded sampling frequency (` ~sampling_frequency.text~ `)`);
+							n_samples_streamed += block_size (in_samples);
 
-					if (not (buffer_size (in_samples) % block_size (in_samples) == 0))
-						assert (0, `buffer (` ~buffer_size (in_samples).text~ `) not evenly divisible into blocks (` ~block_size (in_samples).text~ `)`);
-
-					parameters_invalidated = false;
-				}
-			void invalidate_parameters ()
-				in {/*...}*/
-					assert (not (is_streaming), `attempted to alter device parameters while streaming in progress`);
-				}
-				body {/*...}*/
-					parameters_invalidated = true;
-				}
-			bool parameters_invalidated;
-		}
-		shared {/*data streaming}*/
-			enum {capture = 0x1, generate = 0x2}
-
-			auto stream_is ()
-				{/*...}*/
-					auto n_in = (cast()this).count_open!`input`;
-					auto n_out = (cast()this).count_open!`output`;
-
-					if (n_out == 0 && n_in > 0)
-						return capture;
-					else if (n_in == 0 && n_out > 0)
-						return generate;
-					else if (n_in > 0 && n_out > 0)
-						return (generate | capture);
-					else assert (0, `no channels open`);
-				}
-
-			void capture_block ()
-				in {/*...}*/
-					assert ((cast()this).is_streaming, `attempted to capture data while not streaming`);
-				}
-				body {/*...}*/
-					int n_samples_read = 0;
-
-					auto timeout = 5.seconds;
-
-					with (cast()this) 
-					DAQmx.ReadAnalogF64 (input_task,
-						block_size (in_samples),
-						timeout.to_scalar,
-						DAQmx_Val_GroupByScanNumber,
-						buffer.input,
-						buffer_size (in_samples),
-						&n_samples_read,
-						null
-					);
-
-					with (cast()this) {/*advance buffer}*/
-						version (LIVE)
-						assert (n_samples_read == block_size (in_samples),
-							`incorrect number of samples recorded (` ~n_samples_read.text~ `, ` ~block_size (in_samples).text~ ` expected)`
+							buffer.advance (block_size (in_doubles));
+						}
+					}
+			}
+			const @property {/*buffer block sizes}*/
+				size_t block_size (size_t units)
+					{/*...}*/
+						return ((sampling_frequency / capture_frequency) * units).to!size_t;
+					}
+				size_t buffer_size (size_t units)
+					out (result) {/*...}*/
+						assert (result % block_size (units) == 0, 
+							`buffer size (` ~result.text~ `) is not evenly divisible into blocks (` ~block_size (units).text~ `)`
 						);
-
-						n_samples_streamed += block_size (in_samples);
-
-						buffer.advance (block_size (in_doubles));
 					}
-				}
-		}
-		const @property {/*buffer block sizes}*/
-			size_t block_size (size_t units)
-				{/*...}*/
-					return ((sampling_frequency / capture_frequency) * units).to!size_t;
-				}
-			size_t buffer_size (size_t units)
-				out (result) {/*...}*/
-					assert (result % block_size (units) == 0, 
-						`buffer size (` ~result.text~ `) is not evenly divisible into blocks (` ~block_size (units).text~ `)`
-					);
-				}
-				body {/*...}*/
-					auto minimum_samples_to_buffer = min_recording_history * sampling_frequency;
+					body {/*...}*/
+						auto minimum_samples_to_buffer = min_recording_history * sampling_frequency;
 
-					auto M = minimum_samples_to_buffer;
-					auto B = block_size (in_samples);
+						auto M = minimum_samples_to_buffer;
+						auto B = block_size (in_samples);
 
-					if (B == 0)
-						return 0;
+						if (B == 0)
+							return 0;
 
-					auto samples_to_buffer = ceil (M/B) * B;
-					return (samples_to_buffer * units).to!size_t;
-				}
-
-			enum in_samples = 1;
-			alias in_doubles = count_open!`input`;
-		}
-		private:
-		private {/*status}*/
-			size_t n_samples_streamed;
-		}
-		private {/*parameters}*/
-			auto input_voltage_range = MaxInputVoltageRange ();
-			auto output_voltage_range = MaxOutputVoltageRange ();
-			auto min_recording_history = 1.second;
-			auto min_sampling_frequency = MaxSamplingRate () / InputChannels.count;
-			auto _capture_frequency = 30.hertz;
-			auto _generating_frequency = 30.hertz;
-			auto _generating_period = infinity.seconds;
-		}
-		private {/*handles}*/
-			string device_id;
-			Tid streaming_thread;
-			TaskHandle input_task;
-			TaskHandle output_task;
-		}
-		private {/*channels}*/
-			Input[InputChannels.count] input_channels;
-			Output[OutputChannels.count] output_channels;
-
-			void initialize_channels ()
-				{/*...}*/
-					void initialize (string channel_type)()
-						{/*...}*/
-							int offset = 0;
-							int stride = count_open!channel_type;
-
-							foreach (channel; mixin(channel_type~ q{_channels[]}))
-								if (channel.is_open)
-									{/*...}*/
-										channel.offset = offset++;
-										channel.stride = stride;
-									}
-						}
-						
-					initialize!`input`;
-					initialize!`output`;
-				}
-
-			auto channel_string (string channel_type)()
-				if (channel_type == `input` || channel_type == `output`)
-				{/*...}*/
-					string channel_string;
-
-					foreach (i, channel; mixin(channel_type))
-						if (channel.is_open)
-							channel_string ~= device_id~ `/a` ~channel_type[0]~i.text~ `, `;
-
-					if (channel_string.empty)
-						return ``;
-					else return channel_string[0..$-2];
-				}
-		}
-		private {/*buffer}*/
-			RingBuffer buffer;
-
-			struct RingBuffer
-				{/*...}*/
-					double* buffer;
-					const size_t capacity;
-					size_t position;
-					bool filled;
-
-					this (size_t size)
-						{/*...}*/
-							if (size == 0)
-								return;
-
-							buffer = cast(double*)malloc (size * double.sizeof);
-							capacity = size;
-						}
-					~this ()
-						{/*...}*/
-							if (this.is_ready)
-								free (buffer);
-						}
-
-					auto opIndex (size_t i) const
-						in {/*...}*/
-							assert (this.is_ready, `attempted to access buffer before ready`);
-						}
-						body {/*...}*/
-							if (filled)
-								return buffer[(position + i) % capacity];
-							else return buffer[i];
-						}
-					double* input ()
-						in {/*...}*/
-							assert (this.is_ready, `attempted to access buffer before ready`);
-						}
-						body {/*...}*/
-							return buffer + position;
-						}
-					void advance (size_t positions)
-						in {/*...}*/
-							assert (this.is_ready, `attempted to access buffer before ready`);
-						}
-						body {/*...}*/
-							position += positions;
-
-							if (not (filled) && position >= capacity)
-								filled = true;
-
-
-							position %= capacity;
-						}
-
-					bool is_ready () const
-						{/*...}*/
-							return buffer !is null && capacity > 0;
-						}
-					size_t length () const
-						{/*...}*/
-							return filled? capacity: position;
-						}
-
-					invariant(){/*}*/
-						if (buffer !is null)
-							assert (position < capacity, `ring buffer position (` ~position.text~ `) exceeded capacity (` ~capacity.text~ `)`);
+						auto samples_to_buffer = ceil (M/B) * B;
+						return (samples_to_buffer * units).to!size_t;
 					}
-				}
-		}
-		private {/*callbacks}*/
-			void delegate(uint) callback;
-		}
-		invariant (){/*}*/
-			assert (n_samples_streamed < typeof(n_samples_streamed).max - min_sampling_frequency / _capture_frequency,
-				`n_samples_streamed approaching ` ~typeof(n_samples_streamed).stringof~ `.max`
-			);
-		}
-	}
-	public {/*Specs}*/
-		struct Model (string model_name)
-			{/*...}*/
-				enum name = model_name;
 
-				enum isModel;
+				enum in_samples = 1;
+				alias in_doubles = count_open!`input`;
 			}
-		struct InputChannels (uint n_channels)
-			{/*...}*/
-				enum count = n_channels;
-
-				enum isInputChannels;
+			private:
+			private {/*status}*/
+				size_t n_samples_streamed;
 			}
-		struct OutputChannels (uint n_channels)
-			{/*...}*/
-				enum count = n_channels;
-
-				enum isOutputChannels;
+			private {/*parameters}*/
+				auto input_voltage_range = MaxInputVoltageRange ();
+				auto output_voltage_range = MaxOutputVoltageRange ();
+				auto min_recording_history = 1.second;
+				auto min_sampling_frequency = MaxSamplingRate () / InputChannels.count;
+				auto _capture_frequency = 30.hertz;
+				auto _generating_frequency = 30.hertz;
+				auto _generating_period = infinity.seconds;
 			}
-		struct MaxSamplingRate (uint max_sampling_frequency)
-			{/*...}*/
-				enum rate = max_sampling_frequency.hertz;
+			private {/*handles}*/
+				string device_id;
+				Tid streaming_thread;
+				TaskHandle input_task;
+				TaskHandle output_task;
+			}
+			private {/*channels}*/
+				Input[InputChannels.count] input_channels;
+				Output[OutputChannels.count] output_channels;
 
-				enum isMaxSamplingRate;
-
-				static opCall ()
+				void initialize_channels ()
 					{/*...}*/
-						return rate;
+						void initialize (string channel_type)()
+							{/*...}*/
+								int offset = 0;
+								int stride = count_open!channel_type;
+
+								foreach (channel; mixin(channel_type~ q{_channels[]}))
+									if (channel.is_open)
+										{/*...}*/
+											channel.offset = offset++;
+											channel.stride = stride;
+										}
+							}
+							
+						initialize!`input`;
+						initialize!`output`;
 					}
-			}
-		struct MaxOutputVoltageRange (real min_voltage, real max_voltage)
-			{/*...}*/
-				enum min = min_voltage.volts;
-				enum max = max_voltage.volts;
 
-				enum isMaxOutputVoltageRange;
-
-				static opCall ()
+				auto channel_string (string channel_type)()
+					if (channel_type == `input` || channel_type == `output`)
 					{/*...}*/
-						return Interval!Volts (min, max);
+						string channel_string;
+
+						foreach (i, channel; mixin(channel_type))
+							if (channel.is_open)
+								channel_string ~= device_id~ `/a` ~channel_type[0]~i.text~ `, `;
+
+						if (channel_string.empty)
+							return ``;
+						else return channel_string[0..$-2];
 					}
 			}
-		struct MaxInputVoltageRange (real min_voltage, real max_voltage)
-			{/*...}*/
-				enum min = min_voltage.volts;
-				enum max = max_voltage.volts;
+			private {/*buffer}*/
+				RingBuffer buffer;
 
-				enum isMaxInputVoltageRange;
-
-				static opCall ()
+				struct RingBuffer
 					{/*...}*/
-						return Interval!Volts (min, max);
+						double* buffer;
+						const size_t capacity;
+						size_t position;
+						bool filled;
+
+						this (size_t size)
+							{/*...}*/
+								if (size == 0)
+									return;
+
+								buffer = cast(double*)malloc (size * double.sizeof);
+								capacity = size;
+							}
+						~this ()
+							{/*...}*/
+								if (this.is_ready)
+									free (buffer);
+							}
+
+						auto opIndex (size_t i) const
+							in {/*...}*/
+								assert (this.is_ready, `attempted to access buffer before ready`);
+							}
+							body {/*...}*/
+								if (filled)
+									return buffer[(position + i) % capacity];
+								else return buffer[i];
+							}
+						double* input ()
+							in {/*...}*/
+								assert (this.is_ready, `attempted to access buffer before ready`);
+							}
+							body {/*...}*/
+								return buffer + position;
+							}
+						void advance (size_t positions)
+							in {/*...}*/
+								assert (this.is_ready, `attempted to access buffer before ready`);
+							}
+							body {/*...}*/
+								position += positions;
+
+								if (not (filled) && position >= capacity)
+									filled = true;
+
+
+								position %= capacity;
+							}
+
+						bool is_ready () const
+							{/*...}*/
+								return buffer !is null && capacity > 0;
+							}
+						size_t length () const
+							{/*...}*/
+								return filled? capacity: position;
+							}
+
+						invariant(){/*}*/
+							if (buffer !is null)
+								assert (position < capacity, `ring buffer position (` ~position.text~ `) exceeded capacity (` ~capacity.text~ `)`);
+						}
 					}
 			}
-		struct Serial (size_t serial_number)
-			{/*...}*/
-				enum number = serial_number;
-
-				enum isSerial;
+			private {/*callbacks}*/
+				void delegate(uint) callback;
 			}
-		struct InputBufferSize (uint fifo_size)
-			{/*...}*/
-				enum size = fifo_size;
+			invariant (){/*}*/
+				assert (n_samples_streamed < typeof(n_samples_streamed).max - min_sampling_frequency / _capture_frequency,
+					`n_samples_streamed approaching ` ~typeof(n_samples_streamed).stringof~ `.max`
+				);
+			}
+		}
+		static {/*Specs}*/
+			struct Model (string model_name)
+				{/*...}*/
+					enum name = model_name;
 
-				enum isInputBufferSize;
+					enum isModel;
+				}
+			struct InputChannels (uint n_channels)
+				{/*...}*/
+					enum count = n_channels;
 
-				static opCall ()
+					enum isInputChannels;
+				}
+			struct OutputChannels (uint n_channels)
+				{/*...}*/
+					enum count = n_channels;
+
+					enum isOutputChannels;
+				}
+			struct MaxSamplingRate (uint max_sampling_frequency)
+				{/*...}*/
+					enum rate = max_sampling_frequency.hertz;
+
+					enum isMaxSamplingRate;
+
+					static opCall ()
+						{/*...}*/
+							return rate;
+						}
+				}
+			struct MaxOutputVoltageRange (real min_voltage, real max_voltage)
+				{/*...}*/
+					enum min = min_voltage.volts;
+					enum max = max_voltage.volts;
+
+					enum isMaxOutputVoltageRange;
+
+					static opCall ()
+						{/*...}*/
+							return Interval!Volts (min, max);
+						}
+				}
+			struct MaxInputVoltageRange (real min_voltage, real max_voltage)
+				{/*...}*/
+					enum min = min_voltage.volts;
+					enum max = max_voltage.volts;
+
+					enum isMaxInputVoltageRange;
+
+					static opCall ()
+						{/*...}*/
+							return Interval!Volts (min, max);
+						}
+				}
+			struct Serial (size_t serial_number)
+				{/*...}*/
+					enum number = serial_number;
+
+					enum isSerial;
+				}
+			struct InputBufferSize (uint fifo_size)
+				{/*...}*/
+					enum size = fifo_size;
+
+					enum isInputBufferSize;
+
+					static opCall ()
+						{/*...}*/
+							return size;
+						}
+				}
+			struct OutputBufferSize (uint fifo_size)
+				{/*...}*/
+					enum size = fifo_size;
+
+					enum isOutputBufferSize;
+
+					static opCall ()
+						{/*...}*/
+							return size;
+						}
+				}
+		}
+
+	/* blocking recording function 
+	*/
+	void record_for (T)(T daq, Seconds time)
+		{/*...}*/
+			daq.start;
+
+			while (daq.duration_of_sample_count (daq.n_samples_streamed) <= time)
+				Thread.sleep (5.milliseconds.to_duration);
+
+			daq.stop;
+		}
+}
+public {/*force plate}*/
+	struct ForcePlate
+		{/*...}*/
+			@property {/*force}*/
+				const force ()
 					{/*...}*/
-						return size;
+						return zip (force_x, force_y, force_z).map!vector;
 					}
-			}
-		struct OutputBufferSize (uint fifo_size)
-			{/*...}*/
-				enum size = fifo_size;
 
-				enum isOutputBufferSize;
-
-				static opCall ()
+				const force_x ()
 					{/*...}*/
-						return size;
+						return zip (fx12[], fx34[])
+							.map!(v => v.vector[].sum * voltage_to_force.x);
+					}
+				const force_y ()
+					{/*...}*/
+						return zip (fy14[], fy23[])
+							.map!(v => v.vector[].sum * voltage_to_force.y);
+					}
+				const force_z ()
+					{/*...}*/
+						return zip (fz1[], fz2[], fz3[], fz4[])
+							.map!(v => v.vector[].sum * voltage_to_force.z);
 					}
 			}
-	}
+			@property {/*moment}*/
+				const moment ()
+					{/*...}*/
+						return zip (moment_x, moment_y, moment_z).map!vector;
+					}
 
-/* blocking recording function 
-*/
-void record_for (T)(T daq, Seconds time)
-	{/*...}*/
-		daq.start;
+				const moment_x ()
+					{/*...}*/
+						return zip (fz1[], fz2[], fz3[], fz4[])
+							.map!(v => ([+1,+1,-1,-1] * v.vector)[].sum)
+							.map!(v => v * voltage_to_force.z)
+							.map!(f => f * sensor_offset.y);
+					}
+				const moment_y ()
+					{/*...}*/
+						return zip (fz1[], fz2[], fz3[], fz4[])
+							.map!(v => - v[0] + v[1] + v[2] - v[3])
+							.map!(v => v * voltage_to_force.z)
+							.map!(f => f * sensor_offset.x);
 
-		while (daq.duration_of_sample_count (daq.n_samples_streamed) <= time)
-			Thread.sleep (5.milliseconds.to_duration);
+					}
+				const moment_z ()
+					{/*...}*/
+						return zip (
+							zip (fx34[], fx12[])
+								.map!subtract
+								.map!(v => v * voltage_to_force.x)
+								.map!(f => f * sensor_offset.y),
 
-		daq.stop;
-	}
+							zip (fy14[], fy23[])
+								.map!subtract
+								.map!(v => v * voltage_to_force.y)
+								.map!(f => f * sensor_offset.x)
+						).map!add;
+					}
+			}
+			@property {/*surface moment}*/
+				const surface_moment ()
+					{/*...}*/
+						return zip (surface_moment_x, surface_moment_y).map!vector;
+					}
 
-/////////////////////////////////////////////////////////////////////////////////////////////////////////
+				const surface_moment_x ()
+					{/*...}*/
+						return zip (
+							moment_x,
+							force_y.map!(f => f * sensor_offset.z)
+						).map!(m => m.vector[].sum);
+					}
+				const surface_moment_y ()
+					{/*...}*/
+						return zip (
+							moment_y, 
+							force_x.map!(f => f * sensor_offset.z)
+						).map!(m => ([+1,-1] * m.vector)[].sum);
+					}
+			}
+			@property {/*center_of_pressure}*/
+				const center_of_pressure ()
+					{/*...}*/
+						return zip (center_of_pressure_x, center_of_pressure_y).map!vector;
+					}
 
-struct ForcePlate
-	{/*...}*/
-		@property {/*force}*/
-			const force ()
-				{/*...}*/
-					return zip (force_x, force_y, force_z).map!vector;
-				}
-
-			const force_x ()
-				{/*...}*/
-					return zip (fx12[], fx34[])
-						.map!(v => v.vector[].sum * voltage_to_force.x);
-				}
-			const force_y ()
-				{/*...}*/
-					return zip (fy14[], fy23[])
-						.map!(v => v.vector[].sum * voltage_to_force.y);
-				}
-			const force_z ()
-				{/*...}*/
-					return zip (fz1[], fz2[], fz3[], fz4[])
-						.map!(v => v.vector[].sum * voltage_to_force.z);
-				}
+				const center_of_pressure_x ()
+					{/*...}*/
+						return zip (
+							force_x.map!(f => f * sensor_offset.z),
+							moment_y
+						).map!(m => ([+1,-1] * m.vector)[].sum)
+							.zip (force_z).map!divide;
+					}
+				const center_of_pressure_y ()
+					{/*...}*/
+						return zip (
+							force_y.map!(f => f * sensor_offset.z),
+							moment_x
+						).map!(m => m.vector[].sum)
+							.zip (force_z).map!divide;
+					}
+			}
+			@property {/*torque}*/
+				const z_torque ()
+					{/*...}*/
+						return zip (
+							force_y.map!(f => f * sensor_offset.x),
+							force_x.map!(f => f * sensor_offset.y)
+						).map!(τ => ([+1,-1] * τ.vector)[].sum)
+							.zip (moment_z).map!add;
+					}
+			}
+			public:
+			@property {/*input signals}*/
+				mixin Builder!(
+					Stream!(Volts, Seconds), `fx12`,
+					Stream!(Volts, Seconds), `fx34`,
+					Stream!(Volts, Seconds), `fy14`,
+					Stream!(Volts, Seconds), `fy23`,
+					Stream!(Volts, Seconds), `fz1`,
+					Stream!(Volts, Seconds), `fz2`,
+					Stream!(Volts, Seconds), `fz3`,
+					Stream!(Volts, Seconds), `fz4`,
+				);
+			}
+			@property {/*plate settings}*/
+				mixin Builder!(
+					Vector!(3, typeof(newtons/volt)), `voltage_to_force`,
+					Position, `sensor_offset`,
+				);
+			}
 		}
-		@property {/*moment}*/
-			const moment ()
-				{/*...}*/
-					return zip (moment_x, moment_y, moment_z).map!vector;
-				}
-
-			const moment_x ()
-				{/*...}*/
-					return zip (fz1[], fz2[], fz3[], fz4[])
-						.map!(v => ([+1,+1,-1,-1] * v.vector)[].sum)
-						.map!(v => v * voltage_to_force.z)
-						.map!(f => f * sensor_offset.y);
-				}
-			const moment_y ()
-				{/*...}*/
-					return zip (fz1[], fz2[], fz3[], fz4[])
-						.map!(v => - v[0] + v[1] + v[2] - v[3])
-						.map!(v => v * voltage_to_force.z)
-						.map!(f => f * sensor_offset.x);
-
-				}
-			const moment_z ()
-				{/*...}*/
-					return zip (
-						zip (fx34[], fx12[])
-							.map!subtract
-							.map!(v => v * voltage_to_force.x)
-							.map!(f => f * sensor_offset.y),
-
-						zip (fy14[], fy23[])
-							.map!subtract
-							.map!(v => v * voltage_to_force.y)
-							.map!(f => f * sensor_offset.x)
-					).map!add;
-				}
-		}
-		@property {/*surface moment}*/
-			const surface_moment ()
-				{/*...}*/
-					return zip (surface_moment_x, surface_moment_y).map!vector;
-				}
-
-			const surface_moment_x ()
-				{/*...}*/
-					return zip (
-						moment_x,
-						force_y.map!(f => f * sensor_offset.z)
-					).map!(m => m.vector[].sum);
-				}
-			const surface_moment_y ()
-				{/*...}*/
-					return zip (
-						moment_y, 
-						force_x.map!(f => f * sensor_offset.z)
-					).map!(m => ([+1,-1] * m.vector)[].sum);
-				}
-		}
-		@property {/*center_of_pressure}*/
-			const center_of_pressure ()
-				{/*...}*/
-					return zip (center_of_pressure_x, center_of_pressure_y).map!vector;
-				}
-
-			const center_of_pressure_x ()
-				{/*...}*/
-					return zip (
-						force_x.map!(f => f * sensor_offset.z),
-						moment_y
-					).map!(m => ([+1,-1] * m.vector)[].sum)
-						.zip (force_z).map!divide;
-				}
-			const center_of_pressure_y ()
-				{/*...}*/
-					return zip (
-						force_y.map!(f => f * sensor_offset.z),
-						moment_x
-					).map!(m => m.vector[].sum)
-						.zip (force_z).map!divide;
-				}
-		}
-		@property {/*torque}*/
-			const z_torque ()
-				{/*...}*/
-					return zip (
-						force_y.map!(f => f * sensor_offset.x),
-						force_x.map!(f => f * sensor_offset.y)
-					).map!(τ => ([+1,-1] * τ.vector)[].sum)
-						.zip (moment_z).map!add;
-				}
-		}
-		public:
-		@property {/*input signals}*/
-			mixin Builder!(
-				Stream!(Volts, Seconds), `fx12`,
-				Stream!(Volts, Seconds), `fx34`,
-				Stream!(Volts, Seconds), `fy14`,
-				Stream!(Volts, Seconds), `fy23`,
-				Stream!(Volts, Seconds), `fz1`,
-				Stream!(Volts, Seconds), `fz2`,
-				Stream!(Volts, Seconds), `fz3`,
-				Stream!(Volts, Seconds), `fz4`,
-			);
-		}
-		@property {/*plate settings}*/
-			mixin Builder!(
-				Vector!(3, typeof(newtons/volt)), `voltage_to_force`,
-				Position, `sensor_offset`,
-			);
-		}
-	}
-
-/////////////////////////////////////////////////////////////////////////////////////////////////////////
-unittest {/*...}*/
+}
+unittest {/*}*/
 	auto daq = new DAQDevice!(
 		Model!`NI USB-6216`,
 		Serial!0x_18DEF36,
@@ -1434,64 +1437,29 @@ unittest {/*...}*/
 		}
 	}
 }
-/////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-static if (1)
 void main ()
 	{/*...}*/
-		auto daq = new DAQDevice!(
-			Model!`NI USB-6216`,
-			Serial!0x_18DEF36,
+		template DAQDevice ()
+			{/*...}*/
+				alias DAQDevice = .DAQDevice!(
+					Model!`NI USB-6216`,
+					Serial!0x_18DEF36,
 
-			InputChannels!8,
-			OutputChannels!2,
+					InputChannels!8,
+					OutputChannels!2,
 
-			InputBufferSize!4095,
-			OutputBufferSize!8191,
+					InputBufferSize!4095,
+					OutputBufferSize!8191,
 
-			MaxSamplingRate!(250_000),
-			MaxInputVoltageRange!(-10, 10),
-			MaxOutputVoltageRange!(-10, 10),
-		); /* source: http://www.ni.com/pdf/manuals/371932f.pdf */
+					MaxSamplingRate!(250_000),
+					MaxInputVoltageRange!(-10, 10),
+					MaxOutputVoltageRange!(-10, 10),
+				); /* source: http://www.ni.com/pdf/manuals/371932f.pdf */
+			}
 
-		ForcePlate plate;
+		auto daq = new DAQDevice!();
 
-		with (daq) {/*settings}*/
-			sampling_frequency = 24.kilohertz;
-			capture_frequency = 60.hertz;
-			generating_frequency = 240.hertz;
-
-			history_length = 60.seconds;
-			generating_period = 1/120.hertz;
-
-			daq.voltage_range!`input` = interval (-5.volts, 5.volts); // remove "daq." → OUTSIDE BUG: Error: need 'this' for 'voltage_range' of type 'pure nothrow @property @safe void(Interval!(Unit!(Current, -1, Mass, 1, Space, 2, Time, -3)) range)'
-			daq.voltage_range!`output` = interval (0.volts, 3.volts); // remove "daq." → OUTSIDE BUG: Error: need 'this' for 'voltage_range' of type 'pure nothrow @property @safe void(Interval!(Unit!(Current, -1, Mass, 1, Space, 2, Time, -3)) range)'
-		}
-		with (plate) {/*signals}*/
-			voltage_to_force = vector (1250.newtons/5.volts, 1250.newtons/5.volts, 2500.newtons/5.volts);
-			/* source: TODO */
-
-			sensor_offset = vector (210.mm, 260.mm, -41.mm);
-			/* source: Kistler Type 9260AA Instruction Manual, p.33 */
-
-			fx12 = daq.input[0].sample_by_time;
-			fx34 = daq.input[1].sample_by_time;
-			fy14 = daq.input[2].sample_by_time;
-			fy23 = daq.input[3].sample_by_time;
-			fz1  = daq.input[4].sample_by_time;
-			fz2  = daq.input[5].sample_by_time;
-			fz3  = daq.input[6].sample_by_time;
-			fz4  = daq.input[7].sample_by_time;
-			/* source: check the wires */
-		}
-
-		daq.open_channels!`input`;
-		daq.open_channels!`output`;
-
-		with (daq) {/*output signal generation}*/
-			output[0].generate (t => t % generating_period < 1/generating_frequency? 3.volts : 0.volts);
-			output[1].generate (t => t % generating_period < 1/generating_frequency? 0.volts : 2.volts);
-		}
 		auto timing_light () 
 			{/*...}*/
 				return zip (
@@ -1500,47 +1468,158 @@ void main ()
 				).map!vector;
 			}
 
-		immutable Δt = 1/daq.capture_frequency;
-		auto n_captures = 0;
+		ForcePlate plate;
 
-		auto file = File (`test_data.dat`, `w`);
+		{/*setup}*/
+			with (daq) {/*settings}*/
+				sampling_frequency = 1.2.kilohertz;
+				capture_frequency = 60.hertz;
+				generating_frequency = 240.hertz;
 
-		auto start_time = cast(DateTime)(Clock.currTime);
-		auto subject = `none`;
+				history_length = 10.seconds;
+				generating_period = (1/120.).seconds;
 
-		with (daq) {/*write file header}*/
-			file.writefln (
-				"%s\n"
-				"%s\n"
-				"subject: %s\n"
+				daq.voltage_range!`input` = interval (-5.volts, 5.volts);
+				daq.voltage_range!`output` = interval (0.volts, 3.volts); // remove "daq." → OUTSIDE BUG: Error: need 'this' for 'voltage_range' of type 'pure nothrow @property @safe void(Interval!(Unit!(Current, -1, Mass, 1, Space, 2, Time, -3)) range)'
+			}
+			with (plate) {/*input signals}*/
+				voltage_to_force = vector (1250.newtons/5.volts, 1250.newtons/5.volts, 2500.newtons/5.volts);
+				/* source: check the signal conditioner settings TODO maybe automate this with opencv and a webcam */
 
-				"device: %s #%X\n"
-				"\tsampling_frequency: %s\n"
-				"\tcapture_frequency: %s\n"
-				"\tgenerating_frequency: %s\n"
-				"\tgenerating_period: %s\n"
-				"\tvoltage_range!`input`: %s\n"
-				"\tvoltage_range!`output`: %s\n"
-				,
+				sensor_offset = vector (210.mm, 260.mm, -41.mm);
+				/* source: Kistler Type 9260AA Instruction Manual, p.33 */
 
-				start_time.date.toSimpleString,
-				start_time.timeOfDay.toString,
-				subject,
+				fx12 = daq.input[0].sample_by_time;
+				fx34 = daq.input[1].sample_by_time;
+				fy14 = daq.input[2].sample_by_time;
+				fy23 = daq.input[3].sample_by_time;
+				fz1  = daq.input[4].sample_by_time;
+				fz2  = daq.input[5].sample_by_time;
+				fz3  = daq.input[6].sample_by_time;
+				fz4  = daq.input[7].sample_by_time;
+				/* source: check the wires */
+			}
+			with (daq) {/*output signals}*/
+				immutable period = generating_period;
+				immutable frequency = generating_frequency;
 
-				daq.Model.name, daq.Serial.number,
-					sampling_frequency.text,
-					capture_frequency.text,
-					generating_frequency.text,
-					generating_period.text,
-					daq.voltage_range!`input`.text,
-					daq.voltage_range!`output`.text,
-			);
+				//output[0].generate (t => t % period < 1/frequency? 3.volts : 0.volts); OUTSIDE BUG can't autodetect purity of these function, infers type as void
+				//output[1].generate (t => t % period < 1/frequency? 0.volts : 2.volts);
+
+				pure blue_signal (Seconds t) // function defined as HACK around failure of purity detection
+					{/*...}*/
+						return t % period < 1/frequency? 3.volts : 0.volts;
+					}
+				pure red_signal (Seconds t)
+					{/*...}*/
+						return t % period < 1/frequency? 0.volts : 2.volts;
+					}
+
+				output[0].generate (&blue_signal);
+				output[1].generate (&red_signal);
+			}
+
+			daq.open_channels!`input`;
+			daq.open_channels!`output`;
 		}
-		void stream_to_file (size_t n)
-			{/*...}*/
-				with (plate) {/*...}*/
+		{/*run}*/
+			write (`enter subject name: `);
+			auto subject = readln.strip;
+
+			version (LIVE)
+			assert (not (subject.empty), `live data capture requires subject name.`);
+
+			{/*record & display}*/
+				auto gfx = new Display (1366, 800);
+				gfx.start; scope (exit) gfx.stop;
+				auto txt = new Scribe (gfx);
+
+				bool draw_it;
+				auto min_t = 0.5.seconds;
+				daq.on_capture = (size_t x)
+					{/*...}*/
+						if (daq.recording_length > min_t && not(draw_it))
+							draw_it = true;
+					};
+
+
+				auto elapsed = 0.seconds;
+
+				void draw ()
+					{/*...}*/
+						plot (plate.force_z[$-min_t..$].versus (ℕ[0..daq.n_samples_in (min_t)].map!(i => elapsed + i/daq.sampling_frequency))
+							.stride (daq.sampling_frequency / 256.hertz)
+						)
+							.color (green)
+							.y_axis (`vertical force`, interval (0.newtons, 2000.newtons))
+							.x_axis (`time`, interval (elapsed, elapsed + min_t))
+							.inside ([vector (-0.9,-0.8), vector (0.9, 0.8)].from_draw_space.to_extended_space (gfx).bounding_box)
+							.using (gfx, txt)
+						();
+
+						static if (0)
+						gfx.draw (yellow, circle (0.05, plate.center_of_pressure.back.to_scalar * 2), GeometryMode.t_fan);
+
+						gfx.render;
+					}
+
+				version (MOCK_DATA)
+				foreach (x; 0..8)
+					DAQmx.mock_channel[x] = i => cast(double) sin (π*i*gaussian/100f)^^2;
+
+				daq.start;
+				while (daq.is_streaming && not (daq.buffer.filled))
+					{/*...}*/
+						if (draw_it)
+							{/*...}*/
+								elapsed += 1/daq.capture_frequency;
+
+								draw;
+								draw_it = false;
+							}
+					}
+				daq.stop;
+			}
+			{/*write to file}*/
+				auto time_of_capture = cast(DateTime)(Clock.currTime);
+
+				version (LIVE)
+					auto path = `./dat/capture_` ~time_of_capture.toISOString~ `_` ~subject~ `.dat`;
+				else auto path = `mock_data_capture.dat`;
+
+				auto file = File (path, `w`);
+
+				with (daq) {/*write file header}*/
+					file.writefln (
+						"%s\n"
+						"%s\n"
+						"subject: %s\n"
+
+						"device: %s #%X\n"
+						"\tsampling_frequency: %s\n"
+						"\tcapture_frequency: %s\n"
+						"\tgenerating_frequency: %s\n"
+						"\tgenerating_period: %s\n"
+						"\tvoltage_range!`input`: %s\n"
+						"\tvoltage_range!`output`: %s\n"
+						,
+
+						time_of_capture.date.toSimpleString,
+						time_of_capture.timeOfDay.toString,
+						subject,
+
+						daq.Model.name, daq.Serial.number,
+							sampling_frequency.text,
+							capture_frequency.text,
+							generating_frequency.text,
+							generating_period.text,
+							daq.voltage_range!`input`.text,
+							daq.voltage_range!`output`.text,
+					);
+				}
+				with (plate) {/*write data}*/
 					auto stream = zip (
-						ℕ[0..n], 
+						ℕ[0..daq.sample_count], 
 						zip(
 							timing_light[],
 							force[],
@@ -1548,13 +1627,18 @@ void main ()
 							surface_moment[],
 							center_of_pressure[],
 							z_torque[],
-						)[$-Δt..$]
+						)
 					);
 
-					foreach (τ; stream)
+					
+					writeln;
+					writeln (`writing data to disk...`);
+					writeln ('_'.repeat (stream.length / (stream.length/100)), `█ 100%`);
+
+					foreach (i, item; stream)
 						{/*...}*/
-							auto tick = τ[0];
-							auto item = τ[1];
+							if (i % (stream.length/100) == 0)
+								write (`▒`), stdout.flush;
 
 							file.writefln (
 								"{%s}\n"
@@ -1565,7 +1649,7 @@ void main ()
 								"center_of_pressure %s\n"
 								"z_torque %s\n",
 
-								(n_captures*Δt + tick/daq.sampling_frequency).text,
+								(i/daq.sampling_frequency).text,
 								item[0].text,
 								item[1].text,
 								item[2].text (`N·m`),
@@ -1575,63 +1659,8 @@ void main ()
 							);
 						}
 
-					++n_captures;
+					writeln (`█`);
 				}
 			}
-
-		static if (0)
-		daq.on_capture = &stream_to_file;
-		else
-		{/*display}*/
-			auto gfx = new Display;
-			gfx.start; scope (exit) gfx.stop;
-			auto txt = new Scribe (gfx);
-
-			bool draw_it;
-			auto min_t = 0.5.seconds;
-			daq.on_capture = (size_t x)
-				{/*...}*/
-					if (daq.recording_length > min_t)
-						draw_it = true;
-				};
-
-
-			void draw ()
-				{/*...}*/
-					auto z = (plate.force_x[$-min_t..$].length);
-
-					plot (plate.force_z[$-min_t..$].versus (ℕ[0..z].map!(i => i/daq.sampling_frequency)))
-						.color (green)
-						.y_axis (`vertical force`, interval (0.newtons, 2000.newtons)) // REVIEW can we do interval (x,y).newtons? maybe using identity_element?
-						.inside ([vector (-0.8,-0.8), vector (0.8, 0.8)].bounding_box)
-						.using (gfx, txt)
-					();
-
-					static if (0)
-					gfx.draw (yellow, circle (0.05, plate.center_of_pressure.back.to_scalar * 2), GeometryMode.t_fan);
-
-					gfx.render;
-				}
-
-
-			//TEMP
-			foreach (x; 0..8)
-				DAQmx.mock_channel[x] = i => 0.5 * cast(double) sin (π*i/100f)^^2;
-
-			auto elapsed = 0.seconds;
-			daq.start;
-			while (daq.is_streaming && elapsed < 2.seconds)
-				{/*...}*/
-					if (draw_it)
-						{/*...}*/
-							elapsed += 1/daq.capture_frequency;
-
-							draw ();
-							draw_it = false;
-						}
-				}
-			daq.stop;
 		}
-
-		daq.record_for (1.second);
 	}
