@@ -929,12 +929,12 @@ public {/*daq}*/
 								assert (this.is_ready, `attempted to access buffer before ready`);
 							}
 							body {/*...}*/
-								new_position = position + positions;
+								auto new_position = position + positions;
+
+								position = new_position % capacity;
 
 								if (not (filled) && new_position >= capacity)
 									filled = true;
-
-								position = new_position % capacity;
 							}
 
 						bool is_ready () const
@@ -1556,7 +1556,7 @@ void main ()
 				auto gfx = new Display (1920, 1080);
 
 				gfx.start; scope (exit) gfx.stop;
-				auto txt = new Scribe (gfx, [14, 72]);
+				auto txt = new Scribe (gfx, [14, 144]);
 				auto usr = new Input (gfx, (bool){terminate_draw_loop = true;});
 
 				bool draw_it;
@@ -1573,7 +1573,7 @@ void main ()
 				void draw_cop_vector ()
 					{/*...}*/
 						immutable Δx = vector (-1.0, 0.0);
-						immutable force_to_size = 0.01/newton;
+						immutable force_to_size = 0.005/newton;
 
 						auto force_plate_geometry = square[].map!(v => v * vector (500.mm, 600.mm))
 							.map!dimensionless.scale (2).translate (Δx);
@@ -1584,22 +1584,26 @@ void main ()
 							force_plate_geometry.scale (1.05)[0..1],
 						), GeometryMode.t_strip);
 
-						auto cop_size = plate.force[$-50.milliseconds..$].map!norm.stride (daq.sampling_frequency / 2000.hertz).mean * force_to_size;
-						auto cop_point = Vector!(2, double)(plate.center_of_pressure.back[].map!dimensionless)
-							* [-1,1];
+						auto cop_size = plate.force[$-50.milliseconds..$]
+							.map!norm.stride (daq.sampling_frequency / 2000.hertz)
+							.mean * force_to_size;
+						auto cop_point = plate.center_of_pressure[$-50.milliseconds..$]
+							.stride (daq.sampling_frequency / 2000.hertz)
+							.mean.dimensionless * [-2,2];
 						auto cop_angle = atan2 (
 							plate.force_y[$-10.milliseconds..$].map!dimensionless.mean,
 							-plate.force_x[$-10.milliseconds..$].map!dimensionless.mean
 						);
 
-						txt.write (Unicode.arrow[`left`])
-							.size (72)
-							.color (yellow)
+						gfx.draw (red (0.6), circle (cop_size/50, cop_point + Δx), GeometryMode.t_fan);
+						txt.write (Unicode.arrow[`down`])
+							.rotate (cop_angle + π/2)
+							.size (txt.available_sizes.reduce!max)
+							.color (red (0.4))
 							.inside (force_plate_geometry)
 							.scale (cop_size)
 							.align_to (Alignment.center)
-							.translate (cop_point * 2)
-							.rotate (cop_angle)
+							.translate (cop_point)
 						();
 					}
 
