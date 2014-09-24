@@ -27,6 +27,7 @@ private {/*imports}*/
 		import evx.service;
 		import evx.dsp;
 		import evx.display;
+		import evx.input;
 		import evx.colors;
 		import evx.math;
 		import evx.range;
@@ -41,9 +42,12 @@ private {/*imports}*/
 	alias map = evx.functional.map;
 	alias reduce = evx.functional.reduce;
 	alias stride = evx.range.stride;
+	alias repeat = evx.range.repeat;
 	alias Interval = evx.analysis.Interval;
 	alias round = evx.analysis.round;
+	alias ceil = evx.analysis.ceil;
 	alias seconds = evx.units.seconds;
+	alias sum = evx.arithmetic.sum;
 }
 
 public {/*units}*/
@@ -103,7 +107,7 @@ public {/*daq}*/
 						if (parameters_invalidated)
 							return false;
 
-						if ((sampling_frequency * capture_frequency).to_scalar == 0)
+						if ((sampling_frequency * capture_frequency).to!double == 0)
 							return false;
 
 						if (not (buffer.is_ready))
@@ -230,6 +234,15 @@ public {/*daq}*/
 						mixin(q{
 							} ~channel_type~ q{_voltage_range = range;
 						});
+					}
+
+				auto reference_mode () const
+					{/*...}*/
+						return _reference_mode;
+					}
+				void reference_mode (ReferenceMode mode)
+					{/*...}*/
+						this._reference_mode = mode;
 					}
 			}
 			pure const {/*time ↔ index}*/
@@ -483,9 +496,16 @@ public {/*daq}*/
 								body {/*...}*/
 									//foreach (size_t i, ref sample; samples[offset..$].stride (this.stride)) // OUTSIDE BUG Error: cannot infer argument types
 									for (size_t i = 0; offset + i*stride < samples.length; ++i)
-										samples[offset + i*stride] = generator (i/generating_frequency).to_scalar;
+										samples[offset + i*stride] = generator (i/generating_frequency).to!double;
 								}
 						}
+					}
+
+				/* controls ground reference */
+				enum ReferenceMode
+					{/*...}*/
+						differential = DAQmx_Val_Diff,
+						single_ended = DAQmx_Val_RSE,
 					}
 			}
 			public {/*callbacks}*/
@@ -539,16 +559,16 @@ public {/*daq}*/
 
 										DAQmx.CreateAIVoltageChan (input_task, 
 											channel_string!`input`, ``, 
-											DAQmx_Val_Cfg_Default, 
-											input_voltage_range.min.to_scalar, 
-											input_voltage_range.max.to_scalar, 
+											reference_mode,
+											input_voltage_range.min.to!double, 
+											input_voltage_range.max.to!double, 
 											DAQmx_Val_Volts, 
 											null
 										);
 
 										DAQmx.CfgSampClkTiming (input_task, 
 											`OnboardClock`, 
-											sampling_frequency.to_scalar, 
+											sampling_frequency.to!double, 
 											DAQmx_Val_Rising, 
 											DAQmx_Val_ContSamps, 
 											0
@@ -567,15 +587,15 @@ public {/*daq}*/
 
 										DAQmx.CreateAOVoltageChan (output_task, 
 											channel_string!`output`, ``,
-											output_voltage_range.min.to_scalar, 
-											output_voltage_range.max.to_scalar, 
+											output_voltage_range.min.to!double, 
+											output_voltage_range.max.to!double, 
 											DAQmx_Val_Volts,
 											null
 										);
 
 										DAQmx.CfgSampClkTiming (output_task, 
 											`OnboardClock`, 
-											generating_frequency.to_scalar, 
+											generating_frequency.to!double, 
 											DAQmx_Val_Rising, 
 											DAQmx_Val_ContSamps, 
 											0
@@ -611,7 +631,7 @@ public {/*daq}*/
 											DAQmx.WriteAnalogF64 (output_task,
 												n_samples,
 												auto_start,
-												timeout.to_scalar,
+												timeout.to!double,
 												DAQmx_Val_GroupByScanNumber,
 												samples.ptr,
 												&n_samples_written,
@@ -760,7 +780,7 @@ public {/*daq}*/
 						with (cast()this) 
 						DAQmx.ReadAnalogF64 (input_task,
 							block_size (in_samples),
-							timeout.to_scalar,
+							timeout.to!double,
 							DAQmx_Val_GroupByScanNumber,
 							buffer.input,
 							buffer_size (in_samples),
@@ -819,6 +839,7 @@ public {/*daq}*/
 				auto _capture_frequency = 30.hertz;
 				auto _generating_frequency = 30.hertz;
 				auto _generating_period = infinity.seconds;
+				auto _reference_mode = ReferenceMode.differential;
 			}
 			private {/*handles}*/
 				string device_id;
@@ -869,11 +890,11 @@ public {/*daq}*/
 				struct RingBuffer
 					{/*...}*/
 						double* buffer;
-						const size_t capacity;
+						size_t capacity;
 						size_t position;
 						bool filled;
 
-						this (size_t size)
+						this (in size_t size)
 							{/*...}*/
 								if (size == 0)
 									return;
@@ -908,13 +929,12 @@ public {/*daq}*/
 								assert (this.is_ready, `attempted to access buffer before ready`);
 							}
 							body {/*...}*/
-								position += positions;
+								new_position = position + positions;
 
-								if (not (filled) && position >= capacity)
+								if (not (filled) && new_position >= capacity)
 									filled = true;
 
-
-								position %= capacity;
+								position = new_position % capacity;
 							}
 
 						bool is_ready () const
@@ -926,7 +946,7 @@ public {/*daq}*/
 								return filled? capacity: position;
 							}
 
-						invariant(){/*}*/
+						invariant (){/*}*/
 							if (buffer !is null)
 								assert (position < capacity, `ring buffer position (` ~position.text~ `) exceeded capacity (` ~capacity.text~ `)`);
 						}
@@ -1328,7 +1348,7 @@ unittest {/*}*/
 			daq.open_channel!`input`(7);
 			daq.open_channels!`output`(0,1);
 
-			DAQmx.mock_channel[7] = i => 3*i/daq.sampling_frequency.to_scalar;
+			DAQmx.mock_channel[7] = i => 3*i/daq.sampling_frequency.to!double;
 
 			daq.output[0].generate (t => t*volts/second);
 			daq.output[1].generate (t => 2*t*volts/second).over_period (infinity.seconds);
@@ -1358,7 +1378,7 @@ unittest {/*}*/
 
 			alias signal = λ!(t => t*volts/second);
 
-			DAQmx.mock_channel[0] = i => signal (i/daq.sampling_frequency).to_scalar;
+			DAQmx.mock_channel[0] = i => signal (i/daq.sampling_frequency).to!double;
 
 			daq.output[0].generate (signal!Seconds);
 
@@ -1379,8 +1399,8 @@ unittest {/*}*/
 					auto to_volts = (Seconds t) => s*t*volts/second;
 				}
 
-			DAQmx.mock_channel[0] = i => to_volts!1.0 (i/daq.sampling_frequency).to_scalar;
-			DAQmx.mock_channel[1] = i => to_volts!2.0 (i/daq.sampling_frequency).to_scalar;
+			DAQmx.mock_channel[0] = i => to_volts!1.0 (i/daq.sampling_frequency).to!double;
+			DAQmx.mock_channel[1] = i => to_volts!2.0 (i/daq.sampling_frequency).to!double;
 
 			daq.open_channels!`input` (0,1);
 			daq.open_channels!`output` (1);
@@ -1469,18 +1489,18 @@ void main ()
 			}
 
 		ForcePlate plate;
-
 		{/*setup}*/
 			with (daq) {/*settings}*/
-				sampling_frequency = 1.2.kilohertz;
+				sampling_frequency = 24.kilohertz;
 				capture_frequency = 60.hertz;
 				generating_frequency = 240.hertz;
 
 				history_length = 10.seconds;
 				generating_period = (1/120.).seconds;
 
-				daq.voltage_range!`input` = interval (-5.volts, 5.volts);
-				daq.voltage_range!`output` = interval (0.volts, 3.volts); // remove "daq." → OUTSIDE BUG: Error: need 'this' for 'voltage_range' of type 'pure nothrow @property @safe void(Interval!(Unit!(Current, -1, Mass, 1, Space, 2, Time, -3)) range)'
+				voltage_range!`input` = interval (-5.volts, 5.volts);
+				voltage_range!`output` = interval (0.volts, 3.volts);
+				reference_mode = DAQDevice!().ReferenceMode.single_ended;
 			}
 			with (plate) {/*input signals}*/
 				voltage_to_force = vector (1250.newtons/5.volts, 1250.newtons/5.volts, 2500.newtons/5.volts);
@@ -1527,40 +1547,75 @@ void main ()
 			auto subject = readln.strip;
 
 			version (LIVE)
-			assert (not (subject.empty), `live data capture requires subject name.`);
+			if (subject.empty)
+				subject = `test`;
 
 			{/*record & display}*/
-				auto gfx = new Display (1366, 800);
+				bool terminate_draw_loop;
+
+				auto gfx = new Display (1920, 1080);
+
 				gfx.start; scope (exit) gfx.stop;
-				auto txt = new Scribe (gfx);
+				auto txt = new Scribe (gfx, [14, 72]);
+				auto usr = new Input (gfx, (bool){terminate_draw_loop = true;});
 
 				bool draw_it;
-				auto min_t = 0.5.seconds;
+				auto timespan = 0.5.seconds;
+				auto elapsed = 0.seconds;
 				daq.on_capture = (size_t x)
 					{/*...}*/
-						if (daq.recording_length > min_t && not(draw_it))
+						elapsed += 1/daq.capture_frequency;
+
+						if (daq.recording_length > timespan && not(draw_it))
 							draw_it = true;
 					};
 
-
-				auto elapsed = 0.seconds;
-
-				void draw ()
+				void draw_cop_vector ()
 					{/*...}*/
-						plot (plate.force_z[$-min_t..$].versus (ℕ[0..daq.n_samples_in (min_t)].map!(i => elapsed + i/daq.sampling_frequency))
-							.stride (daq.sampling_frequency / 256.hertz)
+						immutable Δx = vector (-1.0, 0.0);
+						immutable force_to_size = 0.01/newton;
+
+						auto force_plate_geometry = square[].map!(v => v * vector (500.mm, 600.mm))
+							.map!dimensionless.scale (2).translate (Δx);
+
+						gfx.draw (blue (0.75), chain (
+							force_plate_geometry.roundRobin (force_plate_geometry.scale (1.05)),
+							force_plate_geometry[0..1],
+							force_plate_geometry.scale (1.05)[0..1],
+						), GeometryMode.t_strip);
+
+						auto cop_size = plate.force[$-50.milliseconds..$].map!norm.stride (daq.sampling_frequency / 2000.hertz).mean * force_to_size;
+						auto cop_point = Vector!(2, double)(plate.center_of_pressure.back[].map!dimensionless)
+							* [-1,1];
+						auto cop_angle = atan2 (
+							plate.force_y[$-10.milliseconds..$].map!dimensionless.mean,
+							-plate.force_x[$-10.milliseconds..$].map!dimensionless.mean
+						);
+
+						txt.write (Unicode.arrow[`left`])
+							.size (72)
+							.color (yellow)
+							.inside (force_plate_geometry)
+							.scale (cop_size)
+							.align_to (Alignment.center)
+							.translate (cop_point * 2)
+							.rotate (cop_angle)
+						();
+					}
+
+				void draw_plot (T)(T input, string label, Interval!Newtons range, BoundingBox bounds)
+					{/*...}*/
+						auto lap = elapsed;
+
+						plot (input[$-timespan..$].versus (ℕ[0..daq.n_samples_in (timespan)].map!(i => lap + i/daq.sampling_frequency))
+							.stride (daq.sampling_frequency / 128.hertz)
 						)
 							.color (green)
-							.y_axis (`vertical force`, interval (0.newtons, 2000.newtons))
-							.x_axis (`time`, interval (elapsed, elapsed + min_t))
-							.inside ([vector (-0.9,-0.8), vector (0.9, 0.8)].from_draw_space.to_extended_space (gfx).bounding_box)
+							.y_axis (label, range)
+							.x_axis (`time`, interval (lap, lap + timespan))
+							.inside (bounds)
 							.using (gfx, txt)
 						();
-
-						static if (0)
-						gfx.draw (yellow, circle (0.05, plate.center_of_pressure.back.to_scalar * 2), GeometryMode.t_fan);
-
-						gfx.render;
 					}
 
 				version (MOCK_DATA)
@@ -1568,18 +1623,32 @@ void main ()
 					DAQmx.mock_channel[x] = i => cast(double) sin (π*i*gaussian/100f)^^2;
 
 				daq.start;
-				while (daq.is_streaming && not (daq.buffer.filled))
+				while (daq.is_streaming && not (terminate_draw_loop))
 					{/*...}*/
 						if (draw_it)
 							{/*...}*/
-								elapsed += 1/daq.capture_frequency;
-
-								draw;
+								draw_plot (plate.force_z, `vertical force`, 
+									interval (0.newtons, 2000.newtons),
+									[vector (0.1, 1.0), vector (1.7, 1./3)].bounding_box
+								);
+								draw_plot (plate.force_y, `anterior force`, 
+									interval (-1000.newtons, 1000.newtons),
+									[vector (0.1, 1./3), vector (1.7, -1./3)].bounding_box
+								);
+								draw_plot (plate.force_x, `lateral force`, 
+									interval (-1000.newtons, 1000.newtons),
+									[vector (0.1, -1./3), vector (1.7, -1.0)].bounding_box
+								);
+								draw_cop_vector;
 								draw_it = false;
+
+								gfx.render;
+								usr.process;
 							}
 					}
 				daq.stop;
 			}
+			version (none)
 			{/*write to file}*/
 				auto time_of_capture = cast(DateTime)(Clock.currTime);
 
