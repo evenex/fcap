@@ -62,9 +62,7 @@ struct DAQmx
 
 							static if (op == `ReadAnalogF64`)
 								{/*...}*/
-									import std.math: isNaN;
-
-									assert (not (mock_sampling_frequency.to_scalar.isNaN), `mock sampling frequency must be initialized with CfgSampClkTiming`);
+									assert (not (mock_sampling_frequency.isNaN), `mock sampling frequency must be initialized with CfgSampClkTiming`);
 
 									auto num_samps_per_chan = args[1];
 									auto fill_mode = args[3];
@@ -104,7 +102,7 @@ struct DAQmx
 											if (split[0].empty)
 												break;
 
-											uint n = split[0][$-1..$].to!uint;
+											uint n = split[0].find (`ai`)[2..$].to!uint;
 
 											if (not (n in mock_channel))
 												{/*provide default}*/
@@ -112,9 +110,9 @@ struct DAQmx
 														{return i => x;}
 
 													mock_channel[n] = constant (n);
+													import evx.utils;
+													n.pl;
 												}
-
-											channel_string = split[1];
 										}
 								}
 							else static if (op == `CfgSampClkTiming`)

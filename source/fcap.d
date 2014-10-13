@@ -15,6 +15,7 @@ private {/*imports}*/
 		import std.c.stdlib;
 		import std.concurrency;
 		import std.stdio;
+		import std.file;
 		import std.conv;
 		import std.process;
 		import std.string;
@@ -38,9 +39,8 @@ private {/*imports}*/
 		import nidaqmx;
 	}
 
-	alias zip = evx.functional.zip;
-	alias map = evx.functional.map;
-	alias reduce = evx.functional.reduce;
+	mixin(FunctionalToolkit!());
+
 	alias stride = evx.range.stride;
 	alias repeat = evx.range.repeat;
 	alias Interval = evx.analysis.Interval;
@@ -99,6 +99,11 @@ public {/*daq}*/
 				mixin extract!q{InputBufferSize};
 				mixin extract!q{OutputBufferSize};
 			}
+			static {/*properties}*/
+				static if (Model.name == `USB-6126`)
+					enum supports_digital_triggering = true;
+				else enum supports_digital_triggering = false;
+			}
 
 			public:
 			pure const @property {/*status}*/
@@ -123,7 +128,10 @@ public {/*daq}*/
 			pure const @property {/*counters}*/
 				Index sample_count ()
 					{/*...}*/
-						return buffer.length / count_open!`input`;
+						auto inputs = count_open!`input`;
+
+						return inputs > 0?
+							(buffer.length / inputs):0;
 					}
 					
 				Seconds recording_length ()
@@ -259,7 +267,9 @@ public {/*daq}*/
 					}
 				Seconds time_at_index (size_t i)
 					{/*...}*/
-						return i * recording_length / sample_count;
+						return sample_count > 0? 
+							i * recording_length / sample_count:
+							0.seconds;
 					}
 
 				uint n_samples_in (Seconds seconds)
@@ -280,6 +290,9 @@ public {/*daq}*/
 						assert (this.is_ready || count_open!`input` == 0, `DAQ reset error`);
 					}
 					body {/*...}*/
+						if (count_open!`input` == 0)
+							return;
+
 						if (this.is_streaming)
 							stop;
 
@@ -330,7 +343,13 @@ public {/*daq}*/
 						}
 
 					void open_channels (string channel_type)(Index[] indices...)
-						{/*...}*/
+						in {/*...}*/
+							assert (indices.length <= InputChannels.count);
+
+							foreach (i; indices)
+								assert (i < InputChannels.count, i.text~ ` exceeds ` ~InputChannels.stringof);
+						}
+						body {/*...}*/
 							foreach (i; indices)
 								open_channel!channel_type (i);
 						}
@@ -343,7 +362,13 @@ public {/*daq}*/
 						}
 
 					void close_channels (string channel_type)(Index[] indices...)
-						{/*...}*/
+						in {/*...}*/
+							assert (indices.length <= InputChannels.count);
+
+							foreach (i; indices)
+								assert (i < InputChannels.count, i.text~ ` exceeds ` ~InputChannels.stringof);
+						}
+						body {/*...}*/
 							foreach (i; indices)
 								close_channel!channel_type (i);
 						}
@@ -356,7 +381,7 @@ public {/*daq}*/
 						}
 				}
 
-				const @property input ()
+				@property input ()
 					{/*...}*/
 						return input_channels[];
 					}
@@ -500,13 +525,6 @@ public {/*daq}*/
 								}
 						}
 					}
-
-				/* controls ground reference */
-				enum ReferenceMode
-					{/*...}*/
-						differential = DAQmx_Val_Diff,
-						single_ended = DAQmx_Val_RSE,
-					}
 			}
 			public {/*callbacks}*/
 				void on_capture (void delegate(uint n_samples_streamed) callback)
@@ -548,6 +566,36 @@ public {/*daq}*/
 					}
 			}
 			protected:
+			shared void output_pulse (size_t channel, Volts value) // REFACTOR
+				{/*...}*/
+					0.pl;
+					int pointsWritten;
+
+					DAQmx.WriteAnalogF64(
+						(cast()this).output_task,
+						1, 0, 1.0,
+						DAQmx_Val_GroupByChannel, 
+						cast(double*)&value, 
+						&pointsWritten, null
+					);
+
+					value = 0.volts;
+
+					if (0)
+					DAQmx.WriteAnalogF64(
+						(cast()this).output_task,
+						1, 0, 1.0,
+						DAQmx_Val_GroupByChannel, 
+						cast(double*)&value, 
+						&pointsWritten, null
+					);
+
+					pulsing = false;
+
+					return;
+				}
+			__gshared bool pulsing; // REFACTOR
+
 			@Service shared override {/*}*/
 				bool initialize ()
 					{/*...}*/
@@ -574,10 +622,11 @@ public {/*daq}*/
 											0
 										);
 
-										DAQmx.CfgDigEdgeStartTrig (input_task, 
-											`/` ~device_id~ `/PFI0`, 
-											DAQmx_Val_Rising
-										);
+										static if (this.supports_digital_triggering)
+											DAQmx.CfgDigEdgeStartTrig (input_task,
+												`/` ~device_id~ `/PFI0`, 
+												DAQmx_Val_Rising
+											);
 
 										DAQmx.StartTask (input_task);
 									}
@@ -601,10 +650,11 @@ public {/*daq}*/
 											0
 										);
 
-										DAQmx.CfgDigEdgeStartTrig (output_task,
-											`/` ~device_id~ `/PFI0`,
-											DAQmx_Val_Rising
-										);
+										static if (this.supports_digital_triggering)
+											DAQmx.CfgDigEdgeStartTrig (output_task,
+												`/` ~device_id~ `/PFI0`,
+												DAQmx_Val_Rising
+											);
 
 										{/*upload samples}*/
 											auto n_samples = (generating_period * generating_frequency).to!size_t;
@@ -672,7 +722,8 @@ public {/*daq}*/
 
 						ready_channels;
 
-						start_trigger;
+						static if (this.supports_digital_triggering)
+							start_trigger;
 
 						return true;
 					}
@@ -689,6 +740,8 @@ public {/*daq}*/
 					}
 				bool listen ()
 					{/*...}*/
+						if (pulsing)
+							output_pulse (0, 3.volts);
 						return false;
 					}
 				bool terminate ()
@@ -719,7 +772,7 @@ public {/*daq}*/
 			private {/*parameter validation}*/
 				void validate_parameters ()
 					{/*...}*/
-						if (not (sampling_frequency * count_open!`input` <= MaxSamplingRate ()))
+						if (sampling_frequency * count_open!`input` > MaxSamplingRate ())
 							assert (0, `combined sampling frequency (` ~(sampling_frequency * count_open!`input`).text~ `) exceeded ` ~MaxSamplingRate.stringof);
 
 						if (count_open!`output` > 0 && (generating_frequency * generating_period) % 1.0 != 0)
@@ -775,7 +828,7 @@ public {/*daq}*/
 					body {/*...}*/
 						int n_samples_read = 0;
 
-						auto timeout = 5.seconds;
+						auto timeout = 30.seconds; // TEMP was 5
 
 						with (cast()this) 
 						DAQmx.ReadAnalogF64 (input_task,
@@ -933,7 +986,7 @@ public {/*daq}*/
 
 								position = new_position % capacity;
 
-								if (not (filled) && new_position >= capacity)
+								if (not!filled && new_position >= capacity)
 									filled = true;
 							}
 
@@ -1043,6 +1096,13 @@ public {/*daq}*/
 							return size;
 						}
 				}
+		}
+
+	/* controls ground reference */
+	enum ReferenceMode
+		{/*...}*/
+			differential = DAQmx_Val_Diff,
+			single_ended = DAQmx_Val_RSE,
 		}
 
 	/* blocking recording function 
@@ -1243,7 +1303,8 @@ unittest {/*}*/
 
 			daq.record_for (1.second);
 
-			{/*channel crosstalk}*/
+			// TODO extract method
+			{/*channel stream_separation}*/
 				foreach (i; 0.. 8)
 					{/*...}*/
 						assert (daq.input[i].sample_at_time (daq.recording_length - (1/30_000.).seconds) == i.volts);
@@ -1259,14 +1320,20 @@ unittest {/*}*/
 			{/*range mapping}*/
 				import std.range: equal;
 
-				auto stream = daq.input[5].sample_by_time[$-0.0005.seconds..$];
+				auto stream = daq.input[5].sample_by_time[$-0.0005.seconds..$]; // OUTSIDE BUG dmd segfault
+	static if (0)
 				auto mapped = stream.map!(x => x);
+	static if (0)
 				auto mapped_stream = daq.input[5].sample_by_time[$-0.0005.seconds..$].map!(x => x);
 
+	static if (0)
 				assert (stream.equal (mapped));
+	static if (0)
 				assert (mapped.equal (mapped_stream));
+	static if (0)
 				assert (mapped_stream.equal (stream));
 			}
+	static if (0)
 			{/*range reduction}*/
 				import evx.statistics;
 
@@ -1282,6 +1349,7 @@ unittest {/*}*/
 				assert (plate.moment[0.seconds..1.second].std_dev.approx (vector!3 (0.newton*meters)));
 				assert (plate.center_of_pressure[0.seconds..1.second].std_dev.approx (vector!2 (0.meters)));
 			}
+	static if (0)
 			{/*time-slice propagation}*/
 				import std.range: walkLength;
 
@@ -1302,8 +1370,9 @@ unittest {/*}*/
 			}
 
 			daq.close_channels!`input`;
-			DAQmx.mock_channel.clear;
+			DAQmx.mock_channel = null;
 		}
+	static if (0)
 		{/*2 inputs, sinewaves of opposite sign}*/
 			daq.open_channel!`input` (0);
 			daq.open_channel!`input` (1);
@@ -1344,6 +1413,7 @@ unittest {/*}*/
 			daq.close_channels!`input`;
 			DAQmx.mock_channel.clear;
 		}
+	static if (0)
 		{/*1 input, 2 outputs, "live" stream processing}*/
 			daq.open_channel!`input`(7);
 			daq.open_channels!`output`(0,1);
@@ -1370,6 +1440,7 @@ unittest {/*}*/
 			daq.on_capture = null;
 			DAQmx.mock_channel.clear;
 		}
+	static if (0)
 		{/*1 input, 1 output, ramp signal}*/
 			daq.open_channel!`output` (0);
 			daq.open_channel!`input` (0);
@@ -1393,6 +1464,7 @@ unittest {/*}*/
 			daq.close_channels!`output`;
 			DAQmx.mock_channel.clear;
 		}
+	static if (0)
 		{/*2 inputs, 1 output, ramp signals}*/
 			template to_volts (double s)
 				{/*...}*/
@@ -1416,15 +1488,15 @@ unittest {/*}*/
 					plate.force_x				[] // because input[0] + input[1] == plate.force_x and 1.0 + 2.0 == 3.0
 				);
 
-				foreach (item; together[0.seconds..250.milliseconds]) 
+				foreach (item; together[0.ms..250.ms]) 
 					assert (item[0].approx (item[1]));
 
-				foreach (item; together[250.milliseconds..$]) 
+				foreach (item; together[250.ms..$]) 
 					assert (not (item[0].approx (item[1])));
 
 				auto staggered = zip (
-					daq.output[1].sample_by_time[250.milliseconds..500.milliseconds].map!(v => v*newtons/volt),
-					plate.force_x				[0.seconds..250.milliseconds]
+					daq.output[1].sample_by_time[250.ms..500.ms].map!(v => v*newtons/volt),
+					plate.force_x				[0.ms..250.ms]
 				);
 
 				foreach (item; staggered) 
@@ -1433,6 +1505,7 @@ unittest {/*}*/
 
 			DAQmx.mock_channel.clear;
 		}
+	static if (0)
 		{/*1 input, streaming to file}*/
 			import std.file: remove;
 			
@@ -1458,27 +1531,40 @@ unittest {/*}*/
 	}
 }
 
-void main ()
+void live_capture ()
 	{/*...}*/
-		template DAQDevice ()
-			{/*...}*/
-				alias DAQDevice = .DAQDevice!(
-					Model!`NI USB-6216`,
-					Serial!0x_18DEF36,
+		version (all) {/*main daq}*/
+			auto daq = new DAQDevice!(
+				Model!`NI USB-6216`,
+				Serial!0x_18DEF36,
 
-					InputChannels!8,
-					OutputChannels!2,
+				InputChannels!16,
+				OutputChannels!2,
 
-					InputBufferSize!4095,
-					OutputBufferSize!8191,
+				InputBufferSize!4095,
+				OutputBufferSize!8191,
 
-					MaxSamplingRate!(250_000),
-					MaxInputVoltageRange!(-10, 10),
-					MaxOutputVoltageRange!(-10, 10),
-				); /* source: http://www.ni.com/pdf/manuals/371932f.pdf */
-			}
+				MaxSamplingRate!(250_000),
+				MaxInputVoltageRange!(-10, 10),
+				MaxOutputVoltageRange!(-10, 10),
+			); /* source: http://www.ni.com/pdf/manuals/371932f.pdf */
+		}
+		version (two_daqs) {/*mic daq}*/
+			auto mic = new DAQDevice!(
+				Model!`NI USB-6009`,
+				Serial!0x_14B01CA,
 
-		auto daq = new DAQDevice!();
+				InputChannels!4,
+				OutputChannels!2,
+
+				InputBufferSize!512,
+				OutputBufferSize!0,
+
+				MaxSamplingRate!(48_000),
+				MaxInputVoltageRange!(-10, 10),
+				MaxOutputVoltageRange!(0, 5),
+			); /* source: http://www.ni.com/pdf/manuals/371303m.pdf */
+		}
 
 		auto timing_light () 
 			{/*...}*/
@@ -1486,6 +1572,10 @@ void main ()
 					daq.output[0].sample_by_time[],
 					daq.output[1].sample_by_time[]
 				).map!vector;
+			}
+		auto microphone ()
+			{/*...}*/
+				return daq.input[0].sample_by_time;
 			}
 
 		ForcePlate plate;
@@ -1500,7 +1590,7 @@ void main ()
 
 				voltage_range!`input` = interval (-5.volts, 5.volts);
 				voltage_range!`output` = interval (0.volts, 3.volts);
-				reference_mode = DAQDevice!().ReferenceMode.single_ended;
+				reference_mode = ReferenceMode.single_ended;
 			}
 			with (plate) {/*input signals}*/
 				voltage_to_force = vector (1250.newtons/5.volts, 1250.newtons/5.volts, 2500.newtons/5.volts);
@@ -1509,16 +1599,17 @@ void main ()
 				sensor_offset = vector (210.mm, 260.mm, -41.mm);
 				/* source: Kistler Type 9260AA Instruction Manual, p.33 */
 
-				fx12 = daq.input[0].sample_by_time;
-				fx34 = daq.input[1].sample_by_time;
+				fx12 = daq.input[1].sample_by_time;
+				fx34 = daq.input[9].sample_by_time;
 				fy14 = daq.input[2].sample_by_time;
-				fy23 = daq.input[3].sample_by_time;
-				fz1  = daq.input[4].sample_by_time;
-				fz2  = daq.input[5].sample_by_time;
-				fz3  = daq.input[6].sample_by_time;
-				fz4  = daq.input[7].sample_by_time;
+				fy23 = daq.input[10].sample_by_time;
+				fz1  = daq.input[3].sample_by_time;
+				fz2  = daq.input[11].sample_by_time;
+				fz3  = daq.input[4].sample_by_time;
+				fz4  = daq.input[12].sample_by_time;
 				/* source: check the wires */
 			}
+			version (none)
 			with (daq) {/*output signals}*/
 				immutable period = generating_period;
 				immutable frequency = generating_frequency;
@@ -1539,8 +1630,9 @@ void main ()
 				output[1].generate (&red_signal);
 			}
 
-			daq.open_channels!`input`;
-			daq.open_channels!`output`;
+			daq.open_channels!`input` (0, 1,2,3,4, 9,10,11,12);
+			//daq.open_channel!`output` (0);
+			//daq.open_channels!`output`;
 		}
 		{/*run}*/
 			write (`enter subject name: `);
@@ -1553,11 +1645,11 @@ void main ()
 			{/*record & display}*/
 				bool terminate_draw_loop;
 
-				auto gfx = new Display (1920, 1080);
+				scope gfx = new Display(1920, 1080);
 
 				gfx.start; scope (exit) gfx.stop;
-				auto txt = new Scribe (gfx, [14, 144]);
-				auto usr = new Input (gfx, (bool){terminate_draw_loop = true;});
+				scope txt = new Scribe (gfx, [14, 144]);
+				scope usr = new Input (gfx, (bool){terminate_draw_loop = true;});
 
 				bool draw_it;
 				auto timespan = 0.5.seconds;
@@ -1566,10 +1658,29 @@ void main ()
 					{/*...}*/
 						elapsed += 1/daq.capture_frequency;
 
-						if (daq.recording_length > timespan && not(draw_it))
+						if (daq.recording_length > timespan && not!draw_it)
 							draw_it = true;
 					};
 
+				void draw_microphone ()
+					{/*...}*/
+						auto lap = elapsed;
+
+						auto spike () {return microphone[$-timespan..$].reduce!(min, max).subtract.abs;}
+
+						//if (spike > 0.5.volts) daq.pulsing = true;
+						
+						try plot (microphone[$-timespan..$].versus (ℕ[0..daq.n_samples_in (timespan)]
+								.map!(i => lap + i/daq.sampling_frequency))
+							.stride (daq.sampling_frequency / 500.hertz)
+						)	.color (spike > 0.75.volts? yellow:grey(0.5))
+							.y_axis (`microphone`)
+							.x_axis (`time`, interval (lap, lap + timespan))
+							.inside ([vector (-1.5, 1), vector (-0.5, 0.6)])
+							.using (gfx, txt)
+						();
+						catch (Throwable ex) ex.msg.pl (ex.line, ex.file); // TEMP
+					}
 				void draw_cop_vector ()
 					{/*...}*/
 						immutable Δx = vector (-1.0, 0.0);
@@ -1584,37 +1695,57 @@ void main ()
 							force_plate_geometry.scale (1.05)[0..1],
 						), GeometryMode.t_strip);
 
-						auto cop_size = plate.force[$-50.milliseconds..$]
-							.map!norm.stride (daq.sampling_frequency / 2000.hertz)
+						auto cop_size = plate.force[$-50.ms..$]
+							.stride (daq.sampling_frequency / 2000.hertz)
 							.mean * force_to_size;
-						auto cop_point = plate.center_of_pressure[$-50.milliseconds..$]
+						auto cop_point = plate.center_of_pressure[$-50.ms..$]
 							.stride (daq.sampling_frequency / 2000.hertz)
 							.mean.dimensionless * [-2,2];
 						auto cop_angle = atan2 (
-							plate.force_y[$-10.milliseconds..$].map!dimensionless.mean,
-							-plate.force_x[$-10.milliseconds..$].map!dimensionless.mean
+							plate.force_y[$-10.ms..$].map!dimensionless.mean,
+							-plate.force_x[$-10.ms..$].map!dimensionless.mean
 						);
 
-						gfx.draw (red (0.6), circle (cop_size/50, cop_point + Δx), GeometryMode.t_fan);
+						if (cop_size.z > 0.0)
+							{/*...}*/
+								auto ring_geometry = circle (cop_size.z/75, cop_point + Δx);
+								gfx.draw (yellow (0.5 * cop_size.z/cop_size.norm), chain (
+									ring_geometry.roundRobin (ring_geometry.scale (0.9)),
+									ring_geometry[0..1],
+									ring_geometry.scale (0.9)[0..1],
+								), GeometryMode.t_strip);
+							}
+
 						txt.write (Unicode.arrow[`down`])
 							.rotate (cop_angle + π/2)
 							.size (txt.available_sizes.reduce!max)
-							.color (red (0.4))
+							.color (red (1.5 * cop_size.xy.norm/cop_size.norm))
 							.inside (force_plate_geometry)
-							.scale (cop_size)
+							.scale (cop_size.xy.norm * 2)
+							.align_to (Alignment.center)
+							.translate (cop_point)
+						();
+
+						auto torque = plate.moment_z[$-50.ms..$]
+							.stride (daq.sampling_frequency / 2000.hertz)
+							.mean * force_to_size / meters;
+						txt.write (torque > 0? Unicode.arrow[`cw`]: Unicode.arrow[`ccw`])
+							.size (txt.available_sizes.reduce!max)
+							.color (green (10 * torque.abs/cop_size.norm))
+							.inside (force_plate_geometry)
+							.scale (torque.abs * 10)
 							.align_to (Alignment.center)
 							.translate (cop_point)
 						();
 					}
-
 				void draw_plot (T)(T input, string label, Interval!Newtons range, BoundingBox bounds)
 					{/*...}*/
 						auto lap = elapsed;
 
-						plot (input[$-timespan..$].versus (ℕ[0..daq.n_samples_in (timespan)].map!(i => lap + i/daq.sampling_frequency))
-							.stride (daq.sampling_frequency / 128.hertz)
-						)
-							.color (green)
+						plot (input[$-timespan..$].versus (ℕ[0..daq.n_samples_in (timespan)]
+								.map!(i => lap + i/daq.sampling_frequency))
+							.stride (daq.sampling_frequency / 256.hertz)
+						)	.color (green)
 							.y_axis (label, range)
 							.x_axis (`time`, interval (lap, lap + timespan))
 							.inside (bounds)
@@ -1622,20 +1753,23 @@ void main ()
 						();
 					}
 
-				version (MOCK_DATA)
-				foreach (x; 0..8)
-					DAQmx.mock_channel[x] = i => cast(double) sin (π*i*gaussian/100f)^^2;
+				version (MOCK_DATA) {/*...}*/
+					foreach (x; 0..8)
+						DAQmx.mock_channel[x] = i => cast(double) sin (π*i*gaussian/100f)^^2;
+				}
 
 				daq.start;
-				while (daq.is_streaming && not (terminate_draw_loop))
+				while (daq.is_streaming && not!terminate_draw_loop)
 					{/*...}*/
+						scope (failure) {gfx.render; usr.process; continue;}
+
 						if (draw_it)
 							{/*...}*/
 								draw_plot (plate.force_z, `vertical force`, 
 									interval (0.newtons, 2000.newtons),
 									[vector (0.1, 1.0), vector (1.7, 1./3)].bounding_box
 								);
-								draw_plot (plate.force_y, `anterior force`, 
+								draw_plot (plate.force_y, `fore-aft force`, 
 									interval (-1000.newtons, 1000.newtons),
 									[vector (0.1, 1./3), vector (1.7, -1./3)].bounding_box
 								);
@@ -1643,7 +1777,13 @@ void main ()
 									interval (-1000.newtons, 1000.newtons),
 									[vector (0.1, -1./3), vector (1.7, -1.0)].bounding_box
 								);
-								draw_cop_vector;
+
+								try draw_cop_vector; // range measures can fail to align in debug mode due to latency
+								catch (Throwable ex) pl (ex.file, ex.line, ex.msg);
+
+								if (daq.input[0].is_open)
+									draw_microphone;
+
 								draw_it = false;
 
 								gfx.render;
@@ -1671,8 +1811,6 @@ void main ()
 						"device: %s #%X\n"
 						"\tsampling_frequency: %s\n"
 						"\tcapture_frequency: %s\n"
-						"\tgenerating_frequency: %s\n"
-						"\tgenerating_period: %s\n"
 						"\tvoltage_range!`input`: %s\n"
 						"\tvoltage_range!`output`: %s\n"
 						,
@@ -1684,8 +1822,6 @@ void main ()
 						daq.Model.name, daq.Serial.number,
 							sampling_frequency.text,
 							capture_frequency.text,
-							generating_frequency.text,
-							generating_period.text,
 							daq.voltage_range!`input`.text,
 							daq.voltage_range!`output`.text,
 					);
@@ -1694,7 +1830,6 @@ void main ()
 					auto stream = zip (
 						ℕ[0..daq.sample_count], 
 						zip(
-							timing_light[],
 							force[],
 							moment[],
 							surface_moment[],
@@ -1715,7 +1850,6 @@ void main ()
 
 							file.writefln (
 								"{%s}\n"
-								"timing_light %s\n"
 								"force %s\n"
 								"moment %s\n"
 								"surface_moment %s\n"
@@ -1724,11 +1858,10 @@ void main ()
 
 								(i/daq.sampling_frequency).text,
 								item[0].text,
-								item[1].text,
+								item[1].text (`N·m`),
 								item[2].text (`N·m`),
-								item[3].text (`N·m`),
-								item[4].text,
-								item[5].text (`N·m`),
+								item[3].text,
+								item[4].text (`N·m`),
 							);
 						}
 
@@ -1736,4 +1869,179 @@ void main ()
 				}
 			}
 		}
+	}
+
+void analysis ()
+	{/*...}*/
+		scope gfx = new Display (1920, 1080);
+		gfx.start; scope (exit) gfx.stop;
+		gfx.background (white);
+
+		scope txt = new Scribe (gfx, [20]);
+
+		pwriteln (gfx.extended_bounds); // BUG wrong, max(x) is 1.77778, this is correct
+
+		struct Run
+			{/*...}*/
+				string name;
+				Hertz sampling_frequency;
+
+				Seconds[] time;
+				Force[] forces;
+				Moment[] moments;
+				SurfaceMoment[] surface_moments;
+				Position[] centers;
+				NewtonMeters[] torques;
+			}
+		Run[] runs;
+
+		auto directory = `dat`.dirEntries (SpanMode.breadth).array;
+		foreach (i, path; directory) 
+			{/*...}*/
+				auto report_load_progress (int percent)
+					{/*...}*/
+						txt.write (`loading data ` ~percent.text~ `%`)
+							.align_to (Alignment.center)
+						();
+						gfx.render;
+					}
+
+				runs ~= Run (path.text.findSplitAfter (`dat/`)[1].text);
+				report_load_progress ((100*i)/directory.length);
+
+				with (runs.back) foreach (line; File (path, `r`).byLine)
+					if (line.canFind (`sampling_frequency`))
+						{/*...}*/
+							sampling_frequency = Hertz (line.findSplitAfter (`sampling_frequency`)[1].text);
+							break;
+						}
+
+				with (runs.back) foreach (line; File (path ,`r`).byLine)
+					if (line.canFind (`s}`))
+						time ~= Seconds (line.text);
+					else if (line.canFind (`force`))
+						forces ~= Force (line.findSplitAfter (`force`)[1].text);
+					else if (line.canFind (`moment`))
+						moments ~= Moment (line.findSplitAfter (`moment`)[1].text);
+					else if (line.canFind (`surface_moment`))
+						surface_moments ~= SurfaceMoment (line.findSplitAfter (`surface_moment`)[1].text);
+					else if (line.canFind (`center_of_pressure`))
+						centers ~= Position (line.findSplitAfter (`center_of_pressure`)[1].text);
+					else if (line.canFind (`torque`))
+						torques ~= NewtonMeters (line.findSplitAfter (`torque`)[1].text);
+
+				report_load_progress ((100*(i+1))/directory.length);
+			}
+
+		bool terminate;
+		int selected_run = 0;
+		scope usr = new Input (gfx, (bool){terminate = true;});
+		usr.bind (Input.Key.left, (bool on){if (on) selected_run = max (0, selected_run - 1);});
+		usr.bind (Input.Key.right, (bool on){if (on) selected_run = min (runs.length - 1, selected_run + 1);});
+
+		while (not(terminate))
+			{/*...}*/
+				with (runs[selected_run]) 
+				plot (forces.map!(f => f.y).versus (time).stride (400))
+					.title (name)
+					.x_axis (`time`)
+					.y_axis (`fore-aft force`)
+					.using (gfx, txt)
+					.inside (gfx.extended_bounds[].scale (vector (0.9, 1.0)))
+				();
+				gfx.render;
+				usr.process;
+			}
+
+		pwriteln (gfx.extended_bounds); // BUG wrong, max(x) was 1.77778, now is 1.82476?!
+	}
+
+void verify_channel_separation (size_t n_channels, Args...)(Args open_channels)
+	{/*...}*/
+		scope daq = new DAQDevice!(
+			Model!`NI USB-6216`,
+			Serial!0x_18DEF36,
+
+			InputChannels!n_channels,
+			OutputChannels!0,
+
+			InputBufferSize!4095,
+			OutputBufferSize!0,
+
+			MaxSamplingRate!(size_t.max),
+			MaxInputVoltageRange!(-10, 10),
+			MaxOutputVoltageRange!(-10, 10),
+		);
+		
+		DAQmx.mock_channel = null;
+		scope (exit) DAQmx.mock_channel = null;
+
+		daq.sampling_frequency = 100.hertz;
+		daq.open_channels!`input` (open_channels);
+
+		daq.record_for (1.second);
+
+		foreach (i, channel; enumerate (daq.input).filter!((i, ch) => ch.is_open))
+			{/*...}*/
+				auto err_msg (Volts sample, size_t j)
+					{/*...}*/
+						string channels;
+
+						foreach (arg; open_channels)
+							channels ~= arg.text~ `, `;
+
+						channels = channels[0..$-2];
+
+						return `expected ` ~i.volts.text~ ` at [` ~j.text~ `], got ` ~sample.text~ ` (` ~typeof(daq).InputChannels.count.text~ ` channels, ` ~channels~ ` active):`"\n"
+						~channel.sample_by_time[].text;
+					}
+
+				foreach (j, sample; enumerate (daq.input[i].sample_by_index[]))
+					assert (sample == i.volts, err_msg (sample, j));
+
+				foreach (j, sample; enumerate (daq.input[i].sample_by_time[]))
+					assert (sample == i.volts, err_msg (sample, j));
+			}
+
+		daq.close_channels!`input`;
+	}
+
+void main ()
+	{/*...}*/
+		version (LIVE)
+			live_capture;
+	}
+
+static if (0)
+void main ()
+	{/*...}*/
+		auto mic = new DAQDevice!(
+			Model!`NI USB-6009`,
+			Serial!0x_14B01CA,
+
+			InputChannels!4,
+			OutputChannels!2,
+
+			InputBufferSize!512,
+			OutputBufferSize!0,
+
+			MaxSamplingRate!(48_000),
+			MaxInputVoltageRange!(-10, 10),
+			MaxOutputVoltageRange!(0, 5),
+		); /* source: http://www.ni.com/pdf/manuals/371303m.pdf */
+
+		scope gfx = new Display;
+		//gfx.start; scope (exit) gfx.stop;
+
+		mic.reference_mode = ReferenceMode.single_ended;
+
+		mic.sampling_frequency = 10.kilohertz;
+		mic.history_length = 5.seconds;
+		mic.open_channels!`input`;
+
+		mic.record_for (10.seconds);
+
+		mic.input[0].sample_by_time[].length.pl;
+
+		mic.close_channels!`input`;
 	}
