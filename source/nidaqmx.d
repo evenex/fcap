@@ -45,7 +45,7 @@ struct DAQmx
 
 						if (status != DAQmxSuccess)
 							{/*...}*/
-								char[2^^8] error_string;
+								char[2^^10] error_string;
 
 								DAQmxBaseGetExtendedErrorInfo (error_string.ptr, error_string.sizeof);
 
