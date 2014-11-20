@@ -824,76 +824,76 @@ struct DAQmx
 			DAQmxWarningReadNotCompleteBeforeSampClk = 209800, 
 			DAQmxWarningWriteNotCompleteBeforeSampClk = 209801, 
 		}
-		private {/*Task Configuration/Control}*/
-			extern (C) int function (const char* taskName, TaskHandle* taskHandle) DAQmxBaseLoadTask;
-			extern (C) int function (const char* taskName, TaskHandle* taskHandle) DAQmxBaseCreateTask;
-			extern (C) int function (TaskHandle taskHandle) DAQmxBaseStartTask;
-			extern (C) int function (TaskHandle taskHandle) DAQmxBaseStopTask;
-			extern (C) int function (TaskHandle taskHandle) DAQmxBaseClearTask;
-			extern (C) int function (TaskHandle taskHandle, NIBool* isTaskDone) DAQmxBaseIsTaskDone;
+		extern (C) {/*Task Configuration/Control}*/
+			int function (const char* taskName, TaskHandle* taskHandle) DAQmxBaseLoadTask;
+			int function (const char* taskName, TaskHandle* taskHandle) DAQmxBaseCreateTask;
+			int function (TaskHandle taskHandle) DAQmxBaseStartTask;
+			int function (TaskHandle taskHandle) DAQmxBaseStopTask;
+			int function (TaskHandle taskHandle) DAQmxBaseClearTask;
+			int function (TaskHandle taskHandle, NIBool* isTaskDone) DAQmxBaseIsTaskDone;
 		}
-		private {/*Channel Configuration/Creation}*/
-			extern (C) int function (TaskHandle taskHandle, const char* physicalChannel, const char* nameToAssignToChannel, int terminalConfig, double minVal, double maxVal, int units, const char* customScaleName) DAQmxBaseCreateAIVoltageChan;
-			extern (C) int function (TaskHandle taskHandle, const char* physicalChannel, const char* nameToAssignToChannel, double minVal, double maxVal, int units, int thermocoupleType, int cjcSource, double cjcVal, const char* cjcChannel) DAQmxBaseCreateAIThrmcplChan;
-			extern (C) int function (TaskHandle taskHandle, const char* physicalChannel, const char* nameToAssignToChannel, double minVal, double maxVal, int units, const char* customScaleName) DAQmxBaseCreateAOVoltageChan;
-			extern (C) int function (TaskHandle taskHandle, const char* lines, const char* nameToAssignToLines, int lineGrouping) DAQmxBaseCreateDIChan;
-			extern (C) int function (TaskHandle taskHandle, const char* lines, const char* nameToAssignToLines, int lineGrouping) DAQmxBaseCreateDOChan;
-			extern (C) int function (TaskHandle taskHandle, const char* counter, const char* nameToAssignToChannel, double minVal, double maxVal, int units, int edge, int measMethod, double measTime, uint divisor, const char* customScaleName) DAQmxBaseCreateCIPeriodChan;
-			extern (C) int function (TaskHandle taskHandle, const char* counter, const char* nameToAssignToChannel, int edge, uint initialCount, int countDirection) DAQmxBaseCreateCICountEdgesChan;
-			extern (C) int function (TaskHandle taskHandle, const char* counter, const char* nameToAssignToChannel, double minVal, double maxVal, int units, int startingEdge, const char* customScaleName) DAQmxBaseCreateCIPulseWidthChan;
-			extern (C) int function (TaskHandle taskHandle, const char* counter, const char* nameToAssignToChannel, int decodingType, NIBool ZidxEnable, double ZidxVal, int ZidxPhase, int units, double distPerPulse, double initialPos, const char* customScaleName) DAQmxBaseCreateCILinEncoderChan;
-			extern (C) int function (TaskHandle taskHandle, const char* counter, const char* nameToAssignToChannel, int decodingType, NIBool ZidxEnable, double ZidxVal, int ZidxPhase, int units, uint pulsesPerRev, double initialAngle, const char* customScaleName) DAQmxBaseCreateCIAngEncoderChan;
-			extern (C) int function (TaskHandle taskHandle, const char* counter, const char* nameToAssignToChannel, int units, int idleState, double initialDelay, double freq, double dutyCycle) DAQmxBaseCreateCOPulseChanFreq;
-			extern (C) int function (TaskHandle taskHandle, const char* channel, int attribute, void* value) DAQmxBaseGetChanAttribute;
-			extern (C) int function (TaskHandle taskHandle, const char* channel, int attribute, int value) DAQmxBaseSetChanAttribute;
+		extern (C) {/*Channel Configuration/Creation}*/
+			int function (TaskHandle taskHandle, const char* physicalChannel, const char* nameToAssignToChannel, int terminalConfig, double minVal, double maxVal, int units, const char* customScaleName) DAQmxBaseCreateAIVoltageChan;
+			int function (TaskHandle taskHandle, const char* physicalChannel, const char* nameToAssignToChannel, double minVal, double maxVal, int units, int thermocoupleType, int cjcSource, double cjcVal, const char* cjcChannel) DAQmxBaseCreateAIThrmcplChan;
+			int function (TaskHandle taskHandle, const char* physicalChannel, const char* nameToAssignToChannel, double minVal, double maxVal, int units, const char* customScaleName) DAQmxBaseCreateAOVoltageChan;
+			int function (TaskHandle taskHandle, const char* lines, const char* nameToAssignToLines, int lineGrouping) DAQmxBaseCreateDIChan;
+			int function (TaskHandle taskHandle, const char* lines, const char* nameToAssignToLines, int lineGrouping) DAQmxBaseCreateDOChan;
+			int function (TaskHandle taskHandle, const char* counter, const char* nameToAssignToChannel, double minVal, double maxVal, int units, int edge, int measMethod, double measTime, uint divisor, const char* customScaleName) DAQmxBaseCreateCIPeriodChan;
+			int function (TaskHandle taskHandle, const char* counter, const char* nameToAssignToChannel, int edge, uint initialCount, int countDirection) DAQmxBaseCreateCICountEdgesChan;
+			int function (TaskHandle taskHandle, const char* counter, const char* nameToAssignToChannel, double minVal, double maxVal, int units, int startingEdge, const char* customScaleName) DAQmxBaseCreateCIPulseWidthChan;
+			int function (TaskHandle taskHandle, const char* counter, const char* nameToAssignToChannel, int decodingType, NIBool ZidxEnable, double ZidxVal, int ZidxPhase, int units, double distPerPulse, double initialPos, const char* customScaleName) DAQmxBaseCreateCILinEncoderChan;
+			int function (TaskHandle taskHandle, const char* counter, const char* nameToAssignToChannel, int decodingType, NIBool ZidxEnable, double ZidxVal, int ZidxPhase, int units, uint pulsesPerRev, double initialAngle, const char* customScaleName) DAQmxBaseCreateCIAngEncoderChan;
+			int function (TaskHandle taskHandle, const char* counter, const char* nameToAssignToChannel, int units, int idleState, double initialDelay, double freq, double dutyCycle) DAQmxBaseCreateCOPulseChanFreq;
+			int function (TaskHandle taskHandle, const char* channel, int attribute, void* value) DAQmxBaseGetChanAttribute;
+			int function (TaskHandle taskHandle, const char* channel, int attribute, int value) DAQmxBaseSetChanAttribute;
 		}
-		private {/*Timing}*/
-			extern (C) int function (TaskHandle taskHandle, const char* source, double rate, int activeEdge, int sampleMode, ulong sampsPerChan) DAQmxBaseCfgSampClkTiming;
-			extern (C) int function (TaskHandle taskHandle, int sampleMode, ulong sampsPerChan) DAQmxBaseCfgImplicitTiming;
+		extern (C) {/*Timing}*/
+			int function (TaskHandle taskHandle, const char* source, double rate, int activeEdge, int sampleMode, ulong sampsPerChan) DAQmxBaseCfgSampClkTiming;
+			int function (TaskHandle taskHandle, int sampleMode, ulong sampsPerChan) DAQmxBaseCfgImplicitTiming;
 		}
-		private {/*Triggering}*/
-			extern (C) int function (TaskHandle taskHandle) DAQmxBaseDisableStartTrig;
-			extern (C) int function (TaskHandle taskHandle, const char* triggerSource, int triggerEdge) DAQmxBaseCfgDigEdgeStartTrig;
-			extern (C) int function (TaskHandle taskHandle, const char* triggerSource, int triggerSlope, double triggerLevel) DAQmxBaseCfgAnlgEdgeStartTrig;
-			extern (C) int function (TaskHandle taskHandle) DAQmxBaseDisableRefTrig;
-			extern (C) int function (TaskHandle taskHandle, const char* triggerSource, int triggerEdge, uint pretriggerSamples) DAQmxBaseCfgDigEdgeRefTrig;
-			extern (C) int function (TaskHandle taskHandle, const char* triggerSource, int triggerSlope, double triggerLevel, uint pretriggerSamples) DAQmxBaseCfgAnlgEdgeRefTrig;
+		extern (C) {/*Triggering}*/
+			int function (TaskHandle taskHandle) DAQmxBaseDisableStartTrig;
+			int function (TaskHandle taskHandle, const char* triggerSource, int triggerEdge) DAQmxBaseCfgDigEdgeStartTrig;
+			int function (TaskHandle taskHandle, const char* triggerSource, int triggerSlope, double triggerLevel) DAQmxBaseCfgAnlgEdgeStartTrig;
+			int function (TaskHandle taskHandle) DAQmxBaseDisableRefTrig;
+			int function (TaskHandle taskHandle, const char* triggerSource, int triggerEdge, uint pretriggerSamples) DAQmxBaseCfgDigEdgeRefTrig;
+			int function (TaskHandle taskHandle, const char* triggerSource, int triggerSlope, double triggerLevel, uint pretriggerSamples) DAQmxBaseCfgAnlgEdgeRefTrig;
 		}
-		private {/*Read Data}*/
-			extern (C) int function (TaskHandle taskHandle, int numSampsPerChan, double timeout, NIBool fillMode, double* readArray, uint arraySizeInSamps, int* sampsPerChanRead, NIBool* reserved) DAQmxBaseReadAnalogF64;
-			extern (C) int function (TaskHandle taskHandle, int numSampsPerChan, double timeout, NIBool fillMode, short* readArray, uint arraySizeInSamps, int* sampsPerChanRead, NIBool* reserved) DAQmxBaseReadBinaryI16;
-			extern (C) int function (TaskHandle taskHandle, int numSampsPerChan, double timeout, NIBool fillMode, int* readArray, uint arraySizeInSamps, int* sampsPerChanRead, NIBool* reserved) DAQmxBaseReadBinaryI32;
-			extern (C) int function (TaskHandle taskHandle, int numSampsPerChan, double timeout, NIBool fillMode, ubyte* readArray, uint arraySizeInSamps, int* sampsPerChanRead, NIBool* reserved) DAQmxBaseReadDigitalU8;
-			extern (C) int function (TaskHandle taskHandle, int numSampsPerChan, double timeout, NIBool fillMode, uint* readArray, uint arraySizeInSamps, int* sampsPerChanRead, NIBool* reserved) DAQmxBaseReadDigitalU32;
-			extern (C) int function (TaskHandle taskHandle, double timeout, uint* value, NIBool* reserved) DAQmxBaseReadDigitalScalarU32;
-			extern (C) int function (TaskHandle taskHandle, int numSampsPerChan, double timeout, double* readArray, uint arraySizeInSamps, int* sampsPerChanRead, NIBool* reserved) DAQmxBaseReadCounterF64;
-			extern (C) int function (TaskHandle taskHandle, int numSampsPerChan, double timeout, uint* readArray, uint arraySizeInSamps, int* sampsPerChanRead, NIBool* reserved) DAQmxBaseReadCounterU32;
-			extern (C) int function (TaskHandle taskHandle, double timeout, double* value, NIBool* reserved) DAQmxBaseReadCounterScalarF64;
-			extern (C) int function (TaskHandle taskHandle, double timeout, uint* value, NIBool* reserved) DAQmxBaseReadCounterScalarU32;
-			extern (C) int function (TaskHandle taskHandle, int attribute, void* value) DAQmxBaseGetReadAttribute;
+		extern (C) {/*Read Data}*/
+			int function (TaskHandle taskHandle, int numSampsPerChan, double timeout, NIBool fillMode, double* readArray, uint arraySizeInSamps, int* sampsPerChanRead, NIBool* reserved) DAQmxBaseReadAnalogF64;
+			int function (TaskHandle taskHandle, int numSampsPerChan, double timeout, NIBool fillMode, short* readArray, uint arraySizeInSamps, int* sampsPerChanRead, NIBool* reserved) DAQmxBaseReadBinaryI16;
+			int function (TaskHandle taskHandle, int numSampsPerChan, double timeout, NIBool fillMode, int* readArray, uint arraySizeInSamps, int* sampsPerChanRead, NIBool* reserved) DAQmxBaseReadBinaryI32;
+			int function (TaskHandle taskHandle, int numSampsPerChan, double timeout, NIBool fillMode, ubyte* readArray, uint arraySizeInSamps, int* sampsPerChanRead, NIBool* reserved) DAQmxBaseReadDigitalU8;
+			int function (TaskHandle taskHandle, int numSampsPerChan, double timeout, NIBool fillMode, uint* readArray, uint arraySizeInSamps, int* sampsPerChanRead, NIBool* reserved) DAQmxBaseReadDigitalU32;
+			int function (TaskHandle taskHandle, double timeout, uint* value, NIBool* reserved) DAQmxBaseReadDigitalScalarU32;
+			int function (TaskHandle taskHandle, int numSampsPerChan, double timeout, double* readArray, uint arraySizeInSamps, int* sampsPerChanRead, NIBool* reserved) DAQmxBaseReadCounterF64;
+			int function (TaskHandle taskHandle, int numSampsPerChan, double timeout, uint* readArray, uint arraySizeInSamps, int* sampsPerChanRead, NIBool* reserved) DAQmxBaseReadCounterU32;
+			int function (TaskHandle taskHandle, double timeout, double* value, NIBool* reserved) DAQmxBaseReadCounterScalarF64;
+			int function (TaskHandle taskHandle, double timeout, uint* value, NIBool* reserved) DAQmxBaseReadCounterScalarU32;
+			int function (TaskHandle taskHandle, int attribute, void* value) DAQmxBaseGetReadAttribute;
 		}
-		private {/*Write Data}*/
-			extern (C) int function (TaskHandle taskHandle, int numSampsPerChan, NIBool autoStart, double timeout, NIBool dataLayout, double* writeArray, int* sampsPerChanWritten, NIBool* reserved) DAQmxBaseWriteAnalogF64;
-			extern (C) int function (TaskHandle taskHandle, int numSampsPerChan, NIBool autoStart, double timeout, NIBool dataLayout, ubyte* writeArray, int* sampsPerChanWritten, NIBool* reserved) DAQmxBaseWriteDigitalU8;
-			extern (C) int function (TaskHandle taskHandle, int numSampsPerChan, NIBool autoStart, double timeout, NIBool dataLayout, uint* writeArray, int* sampsPerChanWritten, NIBool* reserved) DAQmxBaseWriteDigitalU32;
-			extern (C) int function (TaskHandle taskHandle, NIBool autoStart, double timeout, uint value, NIBool* reserved) DAQmxBaseWriteDigitalScalarU32;
-			extern (C) int function (TaskHandle taskHandle, int attribute, void* value) DAQmxBaseGetWriteAttribute;
-			extern (C) int function (TaskHandle taskHandle, int attribute, int value) DAQmxBaseSetWriteAttribute;
+		extern (C) {/*Write Data}*/
+			int function (TaskHandle taskHandle, int numSampsPerChan, NIBool autoStart, double timeout, NIBool dataLayout, double* writeArray, int* sampsPerChanWritten, NIBool* reserved) DAQmxBaseWriteAnalogF64;
+			int function (TaskHandle taskHandle, int numSampsPerChan, NIBool autoStart, double timeout, NIBool dataLayout, ubyte* writeArray, int* sampsPerChanWritten, NIBool* reserved) DAQmxBaseWriteDigitalU8;
+			int function (TaskHandle taskHandle, int numSampsPerChan, NIBool autoStart, double timeout, NIBool dataLayout, uint* writeArray, int* sampsPerChanWritten, NIBool* reserved) DAQmxBaseWriteDigitalU32;
+			int function (TaskHandle taskHandle, NIBool autoStart, double timeout, uint value, NIBool* reserved) DAQmxBaseWriteDigitalScalarU32;
+			int function (TaskHandle taskHandle, int attribute, void* value) DAQmxBaseGetWriteAttribute;
+			int function (TaskHandle taskHandle, int attribute, int value) DAQmxBaseSetWriteAttribute;
 		}
-		private {/*Events & Signals}*/
-			extern (C) int function (TaskHandle taskHandle, int signalID, const char* outputTerminal) DAQmxBaseExportSignal;
+		extern (C) {/*Events & Signals}*/
+			int function (TaskHandle taskHandle, int signalID, const char* outputTerminal) DAQmxBaseExportSignal;
 		}
-		private {/*Buffer Configurations}*/
-			extern (C) int function (TaskHandle taskHandle, uint numSampsPerChan) DAQmxBaseCfgInputBuffer;
+		extern (C) {/*Buffer Configurations}*/
+			int function (TaskHandle taskHandle, uint numSampsPerChan) DAQmxBaseCfgInputBuffer;
 		}
-		private {/*Device Control}*/
-			extern (C) int function (const char* deviceName) DAQmxBaseResetDevice;
+		extern (C) {/*Device Control}*/
+			int function (const char* deviceName) DAQmxBaseResetDevice;
 		}
-		private {/*Error Handling}*/
-			extern (C) int function (char* errorString, uint bufferSize) DAQmxBaseGetExtendedErrorInfo;
+		extern (C) {/*Error Handling}*/
+			int function (char* errorString, uint bufferSize) DAQmxBaseGetExtendedErrorInfo;
 		}
-		private {/*NI-DAQmxBase Specific Attribute Get/Set/Reset Function Declarations}*/
-			extern (C) int function (const char* device, uint* data) DAQmxBaseGetDevSerialNum;
+		extern (C) {/*NI-DAQmxBase Specific Attribute Get/Set/Reset Function Declarations}*/
+			int function (const char* device, uint* data) DAQmxBaseGetDevSerialNum;
 		}
 
 		static:

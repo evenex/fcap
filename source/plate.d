@@ -49,7 +49,7 @@ struct ForcePlate
 			const moment_y ()
 				{/*...}*/
 					return zip (fz1[], fz2[], fz3[], fz4[])
-						.map!(v => - v[0] + v[1] + v[2] - v[3])
+						.map!(v => ([-1,+1,+1,-1] * v.vector)[].sum)
 						.map!(v => v * voltage_to_force.z)
 						.map!(f => f * sensor_offset.x);
 

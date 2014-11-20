@@ -3,6 +3,17 @@ module fcap.main;
 import fcap.units;
 import fcap.daq;
 import fcap.plate;
+import ipc;
+
+import evx.meta;
+import evx.dsp;
+
+import opencv;
+
+static if (1) version = microphone_enabled;
+static if (0) version = camera_enabled;
+
+enum mic_threshold = 0.3.volts;
 
 private {/*imports}*/
 	private {/*core}*/
@@ -16,6 +27,8 @@ private {/*imports}*/
 		import std.conv;
 		import std.string;
 		import std.datetime;
+		import std.concurrency;
+		import std.process;
 	}
 	private {/*evx}*/
 		import evx.utils;
@@ -31,7 +44,12 @@ private {/*imports}*/
 
 	alias stride = evx.range.stride;
 	alias Interval = evx.analysis.Interval;
+	alias ceil = evx.analysis.ceil;
 	alias seconds = evx.units.seconds;
+	alias uvec = Vector!(2,ulong);
+	alias vec = Vector!(2,double);
+	alias contains = std.algorithm.canFind;
+	alias sum = evx.arithmetic.sum;
 }
 
 __gshared {/*devices}*/
@@ -50,11 +68,13 @@ __gshared {/*devices}*/
 		MaxOutputVoltageRange!(-10, 10),
 	).init; /* source: http://www.ni.com/pdf/manuals/371932f.pdf */
 
-	auto microphone ()
+	auto microphone ()()
 		{/*...}*/
-			return daq.input[0].sample_by_time;
+			version (microphone_enabled)
+				return daq.input[7].sample_by_time;
+			else static assert (0);
 		}
-	auto spike (Seconds timespan)
+	auto spike ()(Seconds timespan)
 		{/*...}*/
 			return microphone[$-timespan..$].reduce!(min, max).subtract.abs;
 		}
@@ -83,7 +103,6 @@ __gshared {/*devices}*/
 
 				voltage_range!`input` = interval (-5.volts, 5.volts);
 				voltage_range!`output` = interval (0.volts, 3.volts);
-				reference_mode = ReferenceMode.single_ended;
 			}
 			with (plate) {/*input signals}*/
 				voltage_to_force = vector (1250.newtons/5.volts, 1250.newtons/5.volts, 2500.newtons/5.volts);
@@ -92,10 +111,10 @@ __gshared {/*devices}*/
 				sensor_offset = vector (210.mm, 260.mm, -41.mm);
 				/* source: Kistler Type 9260AA Instruction Manual, p.33 */
 
-				fx12 = daq.input[1] .sample_by_time;
-				fx34 = daq.input[9] .sample_by_time;
-				fy14 = daq.input[2] .sample_by_time;
-				fy23 = daq.input[10].sample_by_time;
+		//		fx12 = daq.input[1] .sample_by_time;
+		//		fx34 = daq.input[9] .sample_by_time;
+		//		fy14 = daq.input[2] .sample_by_time;
+		//		fy23 = daq.input[10].sample_by_time;
 				fz1  = daq.input[3] .sample_by_time;
 				fz2  = daq.input[11].sample_by_time;
 				fz3  = daq.input[4] .sample_by_time;
@@ -122,12 +141,17 @@ __gshared {/*devices}*/
 				output[1].generate (&red_signal);
 			}
 
-			daq.open_channels!`input` (0, 1,2,3,4, 9,10,11,12);
-		}
+			//daq.open_channels!`input` (1,2,3,4, 9,10,11,12);
+			daq.open_channels!`input` (3,4, 11,12);
 
-	shared static ~this ()
-		{/*...}*/
-			
+			foreach (channel; daq.input)
+				channel.reference_mode = ReferenceMode.single_ended;
+
+			version (microphone_enabled)
+				{/*...}*/
+					daq.open_channel!`input` (7);
+					daq.input[7].reference_mode = ReferenceMode.differential;
+				}
 		}
 }
 public {/*operating modes}*/
@@ -155,7 +179,9 @@ public {/*operating modes}*/
 				}
 			Run[] runs;
 
-			auto directory = `dat`.dirEntries (SpanMode.breadth).array;
+			auto directory = `dat`.dirEntries (SpanMode.breadth).filter!(entry => entry.name.endsWith (`.dat`)).array;
+			if (directory.empty) return;
+
 			foreach (i, path; directory) 
 				{/*...}*/
 					auto report_load_progress (int percent)
@@ -198,14 +224,23 @@ public {/*operating modes}*/
 			scope usr = new Input (gfx, (bool){terminate = true;});
 			usr.bind (Input.Key.left, (bool on){if (on) selected_run = max (0, selected_run - 1);});
 			usr.bind (Input.Key.right, (bool on){if (on) selected_run = min (runs.length - 1, selected_run + 1);});
+			usr.bind (Input.Key.space, (bool on){if (on) {
+				auto data = new ubyte[std.math.ceil (gfx.dimensions[].product * 3).to!uint];
+				gfx.screenshot (data);
+
+				auto img = Image (gfx.dimensions.x.to!uint, gfx.dimensions.y.to!uint);
+				cv.SetData (img, data.ptr, gfx.dimensions.x.to!int * 3);
+				img.flip;
+				cv.SaveImage (`test` ~selected_run.text~ `.png`, img);
+			}});
 
 			while (not(terminate))
 				{/*...}*/
 					with (runs[selected_run]) 
-					plot (forces.map!(f => f.y).versus (time).stride (400))
+					plot (forces.map!(f => f.z).versus (time).stride (100))
 						.title (name)
 						.x_axis (`time`)
-						.y_axis (`fore-aft force`)
+						.y_axis (`vertical force`, interval (0.newtons, 2000.newtons))
 						.using (gfx, txt)
 						.inside (gfx.extended_bounds[].scale (vector (0.9, 1.0)))
 					();
@@ -213,57 +248,21 @@ public {/*operating modes}*/
 					usr.process;
 				}
 
-			pwriteln (gfx.extended_bounds); // BUG wrong, max(x) was 1.77778, now is 1.82476?!
+			//pwriteln (gfx.extended_bounds); // BUG wrong, max(x) was 1.77778, now is 1.82476?!
 		}
 }
-public {/*interprocess communication}*/
-	struct CameraSettings
-		{/*...}*/
-			Vector!(2,int) resolution;
 
-			Hertz framerate;
-
-			Seconds pretrigger_length;
-			Seconds posttrigger_length;
-
-			void write ()
-				{/*...}*/
-					auto file = File (`./vid/settings`, "w");
-
-					file.write (this);
-				}
-		}
-	bool read_shared_flag (string flag_name)
-		{/*...}*/
-			return exists ("./vid/" ~flag_name);
-		}
-	void write_shared_flag (string flag_name, bool value)
-		{/*...}*/
-			writeln (`writing `, flag_name, ` = `, value);
-
-			auto path = "./vid/" ~ flag_name;
-
-			if (value)
-				File (path, "w").write ("1");
-			else if (path.exists)
-				remove (path);
-		}
-	void await_shared_flag (string flag_name)
-		{/*...}*/
-			writeln (`awaiting `, flag_name);
-			
-			while (read_shared_flag (flag_name) == false)
-				{}
-			write_shared_flag (flag_name, false);
-		}
-}
+auto data_path (DateTime capture_time, string subject, string extension)
+	{/*...}*/
+		return `./dat/capture_` ~capture_time.toISOString~ `_` ~subject ~ extension;
+	}
 
 auto write_to_file (string subject, typeof(Clock.currTime()) capture_time, Seconds capture_duration, void delegate(double) progress_report = null)
 	{/*...}*/
 		auto time_of_capture = cast(DateTime)capture_time;
 
 		version (LIVE)
-			auto path = `./dat/capture_` ~time_of_capture.toISOString~ `_` ~subject~ `.dat`;
+			auto path = data_path (time_of_capture, subject, `.dat`);
 		else auto path = `mock_data_capture.dat`;
 
 		auto file = File (path, `w`);
@@ -342,25 +341,351 @@ auto write_to_file (string subject, typeof(Clock.currTime()) capture_time, Secon
 		}
 	}
 
+struct Replay
+	{/*...}*/
+		auto force ()
+			{/*...}*/
+				return stream_from (&read!(`mem.force`), &measure).at (&frequency)[];
+			}
+		auto moment ()
+			{/*...}*/
+				return stream_from (&read!(`mem.moment`), &measure).at (&frequency)[];
+			}
+		auto surface_moment ()
+			{/*...}*/
+				return stream_from (&read!(`mem.surface_moment`), &measure).at (&frequency)[];
+			}
+		auto center_of_pressure ()
+			{/*...}*/
+				return stream_from (&read!(`mem.center_of_pressure`), &measure).at (&frequency)[];
+			}
+		auto torque ()
+			{/*...}*/
+				return stream_from (&read!(`mem.z_torque`), &measure).at (&frequency)[];
+			}
+
+		auto force_x ()
+			{/*...}*/
+				return force.map!(f => f.x);
+			}
+		auto force_y ()
+			{/*...}*/
+				return force.map!(f => f.y);
+			}
+		auto force_z ()
+			{/*...}*/
+				return force.map!(f => f.z);
+			}
+
+		auto moment_x ()
+			{/*...}*/
+				return moment.map!(f => f.x);
+			}
+		auto moment_y ()
+			{/*...}*/
+				return moment.map!(f => f.y);
+			}
+		auto moment_z ()
+			{/*...}*/
+				return moment.map!(f => f.z);
+			}
+
+		auto surface_moment_x ()
+			{/*...}*/
+				return surface_moment.map!(f => f.x);
+			}
+		auto surface_moment_y ()
+			{/*...}*/
+				return surface_moment.map!(f => f.y);
+			}
+
+		auto center_of_pressure_x ()
+			{/*...}*/
+				return center_of_pressure.map!(f => f.x);
+			}
+		auto center_of_pressure_y ()
+			{/*...}*/
+				return center_of_pressure.map!(f => f.y);
+			}
+
+		const length ()
+			{/*...}*/
+				return mem.force.length;
+			}
+		const measure ()
+			{/*...}*/
+				return time[$-1] + 1/sampling_frequency;
+			}
+
+		struct Memory
+			{/*...}*/
+				Force[] force;
+				Moment[] moment;
+				SurfaceMoment[] surface_moment;
+				SurfacePosition[] center_of_pressure;
+				NewtonMeters[] z_torque;
+			}
+		Memory mem;
+
+		Hertz sampling_frequency;
+		Seconds recording_length;
+
+		const time ()
+			{/*...}*/
+				return ℕ[0..(sampling_frequency * recording_length).ceil.to!size_t + 1]
+					.map!(i => i / sampling_frequency);
+			}
+
+		auto frequency ()
+			{/*...}*/
+				return sampling_frequency;
+			}
+
+		auto read (string memory_location)(Seconds t)
+			{/*...}*/
+				mixin(q{
+					return } ~memory_location~ q{[(t * sampling_frequency).to!size_t];
+				});
+			}
+
+		this (string path)
+			{/*...}*/
+				import std.file;
+				import std.stdio;
+
+				auto lines = readText (path).splitLines.map!strip.array;
+
+				auto extract (T, string name)()
+					{/*...}*/
+						return lines
+							.filter!(line => line.startsWith (name))
+							.map!(line => 
+								line.contains (`[`)?
+								line.find (`[`).findSplitAfter (`]`)[0].to!string
+								: line.extract_number
+							)
+							.map!T
+							.array;
+					}
+
+				mem.force = extract!(Force, `force`);
+				mem.moment = extract!(Moment, `moment`);
+				mem.surface_moment = extract!(SurfaceMoment, `surface_moment`);
+				mem.center_of_pressure = extract!(SurfacePosition, `center_of_pressure`);
+				mem.z_torque = extract!(NewtonMeters, `z_torque`);
+
+				assert (length == mem.moment.length);
+				assert (length == mem.surface_moment.length);
+				assert (length == mem.center_of_pressure.length);
+				assert (length == mem.z_torque.length);
+
+				this.sampling_frequency = extract!(Hertz, `sampling_frequency`)
+					.front;
+				this.recording_length = lines
+					.retro.filter!(line => line.contains (`s}`))
+					.front.extract_number
+					.to!double.seconds;
+
+				assert (length == time.length, (length-time.length).abs.to!string);
+			}
+	}
+void draw_plate_visualization (P)(P plate, Seconds begin, Seconds end, BoundingBox bounds, Display gfx, Scribe txt, Input usr)
+	{/*...}*/
+		void draw_plate_visualization ()
+			{/*...}*/
+				immutable Δx = bounds[].mean;
+				immutable force_to_size = 0.005/newton;
+				immutable samples = daq.n_samples_in (end - begin) < 1000? 1: daq.sampling_frequency/1000.hertz;
+
+				auto scale = 1/gfx.extended_bounds.top_right;
+				auto force_plate_geometry = bounds[].map!identity;
+
+				/* force plate bounds */
+				gfx.draw (blue (0.75), chain (
+					force_plate_geometry[].roundRobin (force_plate_geometry.scale (.95)),
+					force_plate_geometry[0..1],
+					force_plate_geometry.scale (.95)[0..1],
+				), GeometryMode.t_strip);
+
+				auto cop_size = plate.force[begin..end]
+					.stride (samples)
+					.mean * force_to_size;
+				auto cop_point = plate.center_of_pressure[begin..end]
+					.stride (samples)
+					.mean.dimensionless * [-0.95*2*bounds.width, 0.85*2*bounds.height]; // BUG sometimes 2,2, sometimes -2,2
+				auto cop_angle = atan2 (
+					plate.force_y[begin..end].map!dimensionless.mean,
+					-plate.force_x[begin..end].map!dimensionless.mean
+				);
+
+				if ((cop_point + Δx).not!within (force_plate_geometry.bounding_box))
+					return;
+
+				if (cop_size.z > 0.0)
+					{/*...}*/
+						auto ring_geometry = circle (cop_size.z/75, cop_point + Δx);
+						gfx.draw (yellow (0.5 * cop_size.z/cop_size.norm), chain (
+							ring_geometry.roundRobin (ring_geometry.scale (0.9)),
+							ring_geometry[0..1],
+							ring_geometry.scale (0.9)[0..1],
+						), GeometryMode.t_strip);
+					}
+
+				txt.write (Unicode.arrow[`down`])
+					.rotate (cop_angle + π/2)
+					.size (txt.available_sizes.reduce!max)
+					.color (red (1.5 * cop_size.xy.norm/cop_size.norm))
+					.inside (force_plate_geometry)
+					.scale (cop_size.xy.norm * 2)
+					.align_to (Alignment.center)
+					.translate (cop_point)
+				();
+
+				auto torque = plate.moment_z[begin..end]
+					.stride (daq.sampling_frequency / 1000.hertz)
+					.mean * force_to_size / meters;
+				if (0)
+				txt.write (torque > 0? Unicode.arrow[`cw`]: Unicode.arrow[`ccw`])
+					.size (txt.available_sizes.reduce!max)
+					.color (green (10 * torque.abs/cop_size.norm))
+					.inside (force_plate_geometry)
+					.scale (torque.abs * 10)
+					.align_to (Alignment.center)
+					.translate (cop_point)
+				();
+			}
+
+		try draw_plate_visualization; // range measures can fail to align in debug mode due to latency
+		catch (Throwable ex) writeln (ex.file, `.`, ex.line, `: `, ex.msg);
+	}
+
+void draw_plot (Style style = Style.standard, T, U)(T input, string label, Seconds begin, Seconds end, Seconds elapsed, Interval!U range, BoundingBox box, Display gfx, Scribe txt, Input usr)
+	{/*...}*/
+		auto lap = elapsed;
+
+		plot!style (input[begin..end].versus (ℕ[0..daq.n_samples_in (end-begin)]
+				.map!(i => lap + i/daq.sampling_frequency))
+			.stride (daq.sampling_frequency / 64.hertz) // TEMP was 256 hertz
+		)	.color (green)
+			.y_axis (label, range)
+			.x_axis (`time`, interval (lap, lap + (end-begin)))
+			.inside (box)
+			.using (gfx, txt)
+		();
+	}
+void draw_force_plots (P)(P plate, Seconds begin, Seconds end, Seconds elapsed, BoundingBox bounds, Display gfx, Scribe txt, Input usr)
+	{/*...}*/
+		auto tl = bounds.top_left;
+		auto tr = bounds.top_right;
+		auto Δy = vec(0, -bounds.height / 2);
+		auto δy = vec(0, -bounds.height / 9);
+
+		draw_plot (plate.force_z, `vertical force`, 
+			begin, end, elapsed,
+			interval (0.newtons, 2000.newtons),
+			[tl, tr + Δy].translate (2*δy).bounding_box,
+			gfx, txt, usr
+		);
+		draw_plot (plate.force_y, `fore-aft force`, 
+			begin, end, elapsed,
+			interval (-1000.newtons, 1000.newtons),
+			[tl + Δy, tr + 2*Δy].translate (δy).bounding_box,
+			gfx, txt, usr
+		);
+		draw_plot (plate.force_x, `lateral force`, 
+			begin, end, elapsed,
+			interval (-1000.newtons, 1000.newtons),
+			[tl + 2*Δy, tr + 3*Δy].bounding_box,
+			gfx, txt, usr
+		);
+	}
+void draw_plate_signals (P)(P plate, Seconds begin, Seconds end, Seconds elapsed, BoundingBox bounds, Display gfx, Scribe txt, Input usr)
+	{/*...}*/
+		bounds = bounds[].translate (vec(0,-bounds.height/6)).bounding_box;
+
+		auto tl = bounds.top_left;
+		auto tr = bounds.top_right;
+		auto tm = (tl+tr) / 2;
+
+		auto Δy = vec(0, -bounds.height / 3);
+
+		if (plate.fx12.is_active)
+			draw_plot!(Style.minimal) (plate.fx12, `fx12`, 
+				begin, end, elapsed,
+				interval (-5.volts, 5.volts),
+				[tl + 0*Δy, tm + 1*Δy].bounding_box,
+				gfx, txt, usr
+			);
+		if (plate.fx34.is_active)
+			draw_plot!(Style.minimal) (plate.fx34, `fx34`, 
+				begin, end, elapsed,
+				interval (-5.volts, 5.volts),
+				[tl + 1*Δy, tm + 2*Δy].bounding_box,
+				gfx, txt, usr
+			);
+		if (plate.fy14.is_active)
+			draw_plot!(Style.minimal) (plate.fy14, `fy14`, 
+				begin, end, elapsed,
+				interval (-5.volts, 5.volts),
+				[tl + 2*Δy, tm + 3*Δy].bounding_box,
+				gfx, txt, usr
+			);
+		if (plate.fy23.is_active)
+			draw_plot!(Style.minimal) (plate.fy23, `fy23`, 
+				begin, end, elapsed,
+				interval (-5.volts, 5.volts),
+				[tl + 3*Δy, tm + 4*Δy].bounding_box,
+				gfx, txt, usr
+			);
+		if (plate.fz1.is_active)
+			draw_plot!(Style.minimal) (plate.fz1, `fz1`, 
+				begin, end, elapsed,
+				interval (-5.volts, 5.volts),
+				[tm + 0*Δy, tr + 1*Δy].bounding_box,
+				gfx, txt, usr
+			);
+		if (plate.fz2.is_active)
+			draw_plot!(Style.minimal) (plate.fz2, `fz2`, 
+				begin, end, elapsed,
+				interval (-5.volts, 5.volts),
+				[tm + 1*Δy, tr + 2*Δy].bounding_box,
+				gfx, txt, usr
+			);
+		if (plate.fz3.is_active)
+			draw_plot!(Style.minimal) (plate.fz3, `fz3`, 
+				begin, end, elapsed,
+				interval (-5.volts, 5.volts),
+				[tm + 2*Δy, tr + 3*Δy].bounding_box,
+				gfx, txt, usr
+			);
+		if (plate.fz4.is_active)
+			draw_plot!(Style.minimal) (plate.fz4, `fz4`, 
+				begin, end, elapsed,
+				interval (-5.volts, 5.volts),
+				[tm + 3*Δy, tr + 4*Δy].bounding_box,
+				gfx, txt, usr
+			);
+	}
+
+void draw_microphone ()(Seconds begin, Seconds end, Seconds elapsed, BoundingBox bounds, Display gfx, Scribe txt)
+	{/*...}*/
+		try plot!(Style.minimal) (microphone[begin..end].versus (ℕ[0..daq.n_samples_in (end - begin)]
+				.map!(i => elapsed + i/daq.sampling_frequency))
+			.stride (daq.sampling_frequency / 256.hertz)
+		)	.color (spike (end-begin) > mic_threshold? yellow:grey(0.5))
+			.y_axis (`mic`)
+			.x_axis (`time`, interval (elapsed, elapsed + end - begin))
+			.inside (bounds)
+			.using (gfx, txt)
+		();
+		catch (Throwable ex) ex.msg.writeln (ex.line, ex.file); // TEMP
+	}
 void display (Seconds timespan, Seconds elapsed, Display gfx, Scribe txt, Input usr)
 	{/*...}*/
-		if (elapsed < 50.ms)
+		if (elapsed < timespan)
 			return;
 
-		void draw_microphone ()
-			{/*...}*/
-				try plot (microphone[$-timespan..$].versus (ℕ[0..daq.n_samples_in (timespan)]
-						.map!(i => elapsed + i/daq.sampling_frequency))
-					.stride (daq.sampling_frequency / 500.hertz)
-				)	.color (spike (timespan) > 0.75.volts? yellow:grey(0.5))
-					.y_axis (`microphone`)
-					.x_axis (`time`, interval (elapsed, elapsed + timespan))
-					.inside ([vector (-1.5, 1), vector (-0.5, 0.6)])
-					.using (gfx, txt)
-				();
-				catch (Throwable ex) ex.msg.pl (ex.line, ex.file); // TEMP
-			}
-		void draw_cop_vector ()
+		void draw_plate_visualization ()
 			{/*...}*/
 				immutable Δx = vector (-1.0, 0.0);
 				immutable force_to_size = 0.005/newton;
@@ -374,12 +699,12 @@ void display (Seconds timespan, Seconds elapsed, Display gfx, Scribe txt, Input 
 					force_plate_geometry.scale (1.05)[0..1],
 				), GeometryMode.t_strip);
 
-				auto cop_size = plate.force[$-50.ms..$]
-					.stride (daq.sampling_frequency / 2000.hertz)
+				auto cop_size = plate.force[$-10.ms..$]
+					.stride (daq.sampling_frequency / 1000.hertz)
 					.mean * force_to_size;
-				auto cop_point = plate.center_of_pressure[$-50.ms..$]
-					.stride (daq.sampling_frequency / 2000.hertz)
-					.mean.dimensionless * [-2,2];
+				auto cop_point = plate.center_of_pressure[$-10.ms..$]
+					.stride (daq.sampling_frequency / 1000.hertz)
+					.mean.dimensionless * 2;
 				auto cop_angle = atan2 (
 					plate.force_y[$-10.ms..$].map!dimensionless.mean,
 					-plate.force_x[$-10.ms..$].map!dimensionless.mean
@@ -408,8 +733,8 @@ void display (Seconds timespan, Seconds elapsed, Display gfx, Scribe txt, Input 
 					.translate (cop_point)
 				();
 
-				auto torque = plate.moment_z[$-50.ms..$]
-					.stride (daq.sampling_frequency / 2000.hertz)
+				auto torque = plate.moment_z[$-10.ms..$]
+					.stride (daq.sampling_frequency / 1000.hertz)
 					.mean * force_to_size / meters;
 				txt.write (torque > 0? Unicode.arrow[`cw`]: Unicode.arrow[`ccw`])
 					.size (txt.available_sizes.reduce!max)
@@ -449,11 +774,11 @@ void display (Seconds timespan, Seconds elapsed, Display gfx, Scribe txt, Input 
 				[vector (0.1, -1./3), vector (1.7, -1.0)].bounding_box
 			);
 
-			try draw_cop_vector; // range measures can fail to align in debug mode due to latency
-			catch (Throwable ex) pl (ex.file, ex.line, ex.msg);
+			try draw_plate_visualization; // range measures can fail to align in debug mode due to latency
+			catch (Throwable ex) writeln (ex.file, ex.line, ex.msg);
 
-			if (daq.input[0].is_open)
-				draw_microphone;
+			version (microphone_enabled)
+				draw_microphone (daq.recording_length - timespan, daq.recording_length, elapsed, gfx.extended_bounds, gfx, txt);
 
 			gfx.render;
 			usr.process;
@@ -476,127 +801,364 @@ void display_waiting (string reason, Display gfx, Scribe txt, Input usr)
 		usr.process;
 	}
 
-void main (string[] args)
+void download_video (string subject, typeof(Clock.currTime()) capture_time, void delegate(double) progress_report = null)
 	{/*...}*/
-		assert (args.length > 1, `specify subject name in command line`);
+		enum dl_progress = `./vid/download_progress`;
 
-		enum pre_trigger_time = 0.5.seconds;
-		enum post_trigger_time = 0.5.seconds;
-		enum capture_history = 1.second;
+		while (read_ipc_flag (dl_progress) == false)
+			Thread.sleep (250.msecs);
 
-		CameraSettings (vector (800, 600), 200.hertz, pre_trigger_time, post_trigger_time)
-			.write;
-
-		bool triggered, terminated, draw_frame, save;
-
-		auto elapsed = 0.seconds;
-		typeof(Clock.currTime()) trigger_time;
-
-		//////
-
-		scope gfx = new Display (1920, 1080);
-		gfx.start; scope (exit) gfx.stop;
-		scope txt = new Scribe (gfx, [14, 144]);
-		scope usr = new Input (gfx, (bool){terminated = true;});
-
-		//////
-
-		auto sleep_frame ()
+		while (1)
 			{/*...}*/
-				Thread.sleep ((1/daq.capture_frequency).to_duration);
-			}
-		void await_camera ()
-			{/*...}*/
-				while (read_shared_flag ("camera_ready") == false)
+				double progress = 0.0;
+
+				if (progress_report)
+					progress_report (0.0);
+				
+				while (1)
 					{/*...}*/
-						display_waiting (`camera`, gfx, txt, usr);
-						sleep_frame;
-					}
-				write_shared_flag (`camera_ready`, false);
-			}
-		auto save_data (string subject)
-			{/*...}*/
-				(cast(shared)daq).send_digital_pulse;
-
-				daq.stop;
-
-				triggered = false;
-
-				write_shared_flag ("recording_finished", true);
-
-				write_to_file (subject, Clock.currTime (), capture_history,
-					(double pct) {/*...}*/
-						txt.write (`writing to file ` ~pct.to!string~ `%`)
-							.color (red)
-							.size (txt.font_sizes[].reduce!max)
-							.scale (0.5)
-							.align_to (Alignment.center)
-						();
-						gfx.render;
-					}
-				);
-			}
-
-		//////
-
-		//write (`enter subject name: `);
-		auto subject = args[1];
-
-		version (LIVE)
-		if (subject.empty)
-			subject = `test`;
-
-		//////
-
-		daq.on_capture = (size_t)
-			{/*...}*/
-				elapsed += 1/daq.capture_frequency;
-
-				if (elapsed < pre_trigger_time)
-					return;
-
-				if (not!triggered && spike (4/daq.capture_frequency) > 0.75.volts)
-					{/*...}*/
-						trigger_time = Clock.currTime;
-						triggered = true;
-						draw_frame = true;
-					}
-				else if (triggered && Clock.currTime - trigger_time > post_trigger_time.to_duration)
-					{/*...}*/
-						save = true;
-					}
-				else draw_frame = true;
-			};
-
-		await_camera;
-		daq.start;
-
-		while (not!terminated)
-			{/*main loop}*/
-				while (elapsed <= max (pre_trigger_time, capture_history))
-					{/*...}*/
-						display_waiting (`buffer`, gfx, txt, usr);
-						sleep_frame;
-					}
-
-				if (draw_frame && daq.is_streaming)
-					{/*...}*/
-						draw_frame = false;
-
-						display (capture_history, elapsed, gfx, txt, usr);
-					}
-				else if (save)
-					{/*...}*/
-						save = false;
-
-						save_data (subject);
-
+						try progress = File (dl_progress, "r").byLine.front.to!string.to!double;
+						catch (Exception) continue;
 						break;
 					}
-				else sleep_frame;
+
+				if (progress_report && progress <= 100 && progress >= 0)
+					progress_report (progress);
+
+				if (progress >= 100)
+					break;
+
+				Thread.sleep (250.msecs);
 			}
 
-		daq.stop;
-		(cast(shared)daq).power_cycle;
-		write_shared_flag ("terminate", true);
+		write_ipc_flag (dl_progress, false);
+
+		`./vid/output.avi`.rename (data_path (cast(DateTime)capture_time, subject, `.avi`));
 	}
+
+struct CameraSettings
+	{/*...}*/
+		uvec resolution;
+
+		Hertz framerate;
+
+		Seconds pretrigger, posttrigger;
+	}
+
+version (none)
+	void main (string[] args)
+		{/*...}*/
+			write_ipc_flag ("./vid/terminated", false);
+			write_ipc_flag ("./vid/recording_finished", false);
+			write_ipc_flag ("./vid/camera_ready", false);
+
+			auto capture_history = 1.seconds;
+			auto pre_trigger_time = capture_history/2;
+			auto post_trigger_time = capture_history/2;
+
+			File (`./vid/camera_settings`, `w`).write (CameraSettings (uvec (800,600), 200.hertz, capture_history));
+
+			__gshared bool triggered, terminated, draw_frame, save, manual_trigger;
+
+			version (camera_enabled)
+				spawn ((){executeShell (`./vcap.sh`).output.writeln; terminated = true;});
+
+			auto elapsed = 0.seconds;
+			typeof(Clock.currTime()) trigger_time;
+
+			//////
+
+			scope gfx = new Display (1920, 1080);
+			gfx.start; scope (exit) gfx.stop;
+			scope txt = new Scribe (gfx, [14, 144]);
+			scope usr = new Input (gfx, (bool){terminated = true;});
+			usr.bind (Input.Key.space, (bool){manual_trigger = true;});
+
+			//////
+
+			auto sleep_frame ()
+				{/*...}*/
+					Thread.sleep ((1/daq.capture_frequency).to_duration);
+				}
+			void await_camera ()
+				{/*...}*/
+					await_ipc_flag ("./vid/camera_ready",
+						(){/*...}*/
+							display_waiting (`camera`, gfx, txt, usr);
+							sleep_frame;
+
+							return not!terminated;
+						}
+					);
+				}
+			auto save_data (string subject)
+				{/*...}*/
+					(cast(shared)daq).send_digital_pulse;
+
+					daq.stop;
+
+					write_ipc_flag ("./vid/recording_finished", true);
+
+					auto capture_time = Clock.currTime ();
+
+					write_to_file (subject, capture_time, capture_history,
+						(double pct) {/*...}*/
+							txt.write (`writing to file ` ~pct.to!string~ `%`)
+								.color (red)
+								.size (txt.font_sizes[].reduce!max)
+								.scale (0.5)
+								.align_to (Alignment.center)
+							();
+							gfx.render;
+						}
+					);
+
+					version (camera_enabled)
+						download_video (subject, capture_time,
+							(double pct) {/*...}*/
+								auto pct_str = pct.to!string;
+
+								txt.write (`downloading video ` ~(pct_str.length == 2? pct_str: ` `~pct_str)~ `%`)
+									.color (red)
+									.size (txt.font_sizes[].reduce!max)
+									.scale (0.5)
+									.align_to (Alignment.center)
+								();
+								gfx.render;
+							}
+						);
+				}
+
+			//////
+
+			auto subject = `test`;
+
+			version (LIVE)
+			if (subject.empty)
+				subject = `test`;
+
+			//////
+
+			daq.on_capture = (size_t)
+				{/*...}*/
+					elapsed += 1/daq.capture_frequency;
+
+					if (elapsed < pre_trigger_time)
+						return;
+
+					version (microphone_enabled)
+						auto trigger = false;//spike (4/daq.capture_frequency) > mic_threshold;TEMP 
+					else auto trigger = false;
+
+					trigger = trigger || manual_trigger;
+
+					if (not!triggered && trigger)
+						{/*...}*/
+							trigger_time = Clock.currTime;
+							triggered = true;
+							draw_frame = true;
+							manual_trigger = false;
+						}
+					else if (triggered && Clock.currTime - trigger_time > post_trigger_time.to_duration)
+						{/*...}*/
+							save = true;
+							triggered = false;
+							manual_trigger = false;
+						}
+					else draw_frame = true;
+				};
+
+			scope (exit) write_ipc_flag (`./vid/terminated`, true);
+
+			while (not!terminated)
+				{/*main loop}*/
+					manual_trigger = triggered = terminated = draw_frame = save = false;
+
+					version (camera_enabled)
+						await_camera;
+
+
+					daq.start;
+					elapsed = 0.seconds;
+
+					while (not!terminated)
+						{/*...}*/
+							while (elapsed <= max (pre_trigger_time, capture_history))
+								{/*...}*/
+									display_waiting (`buffer`, gfx, txt, usr);
+									sleep_frame;
+								}
+
+							if (draw_frame && daq.is_streaming)
+								{/*...}*/
+									draw_frame = false;
+
+									auto bounds = gfx.extended_bounds;
+									auto length = daq.recording_length;
+							//		draw_plate_visualization (plate, length - 10.ms, length, bounds[].scale (1.0/3).translate (2*bounds.top_right/3).bounding_box, gfx, txt, usr);
+									draw_plate_signals (plate, length - 0.5.seconds, length, elapsed, bounds[].scale (vec (1, 0.5)).bounding_box, gfx, txt, usr);
+									version (microphone_enabled)
+										draw_microphone (length - 200.ms, length, elapsed, bounds[].scale (vec (0.5,0.3)).translate (vec(-bounds.width/4,bounds.height/3)).bounding_box, gfx, txt);
+
+									gfx.render;
+									usr.process;
+								}
+							if (save)
+								{/*...}*/
+									save = false;
+
+									save_data (subject);
+
+									break;
+								}
+							else sleep_frame;
+						}
+				}
+
+			daq.stop;
+		}
+else version (none)
+	void main () {analysis;}
+else version (all)
+	void main ()
+		{/*replay}*/
+			import std.file;
+			import std.stdio;
+			alias copy = std.algorithm.copy;
+
+			bool terminated;
+			bool paused;
+			bool change_video;
+
+			scope gfx = new Display (1000, 1000);
+				gfx.start; scope (exit) gfx.stop;
+			scope txt = new Scribe (gfx, [14, 144]);
+			scope usr = new Input (gfx, (bool){terminated = true;});
+				usr.bind (Input.Key.space, (bool on){if (on) paused = not (paused);});
+
+			auto corresponding_video (string path)
+				{/*...}*/
+					return `/home/vlevenfeld3/fcap` ~path[1..$-3]~`avi`;
+				}
+
+			auto paths = dirEntries (`./dat/`, SpanMode.shallow)
+				.map!(entry => entry.name)
+				.filter!(path => path.endsWith (`dat`))
+				.filter!(path => (corresponding_video (path).exists))
+				.array;
+
+			scope frame = Image (gfx.dimensions[].map!(to!int).vector!2.to!CvSize);
+
+			auto i = 0;
+			while (1)
+				{/*...}*/
+					enum sleep = 32.ms;
+					auto timepoint = 0.seconds;
+					auto width = 1.ms;
+
+					auto replay = Replay (paths[i]);
+					replay.mem.center_of_pressure[].map!(v => v * vec(-1,1)).copy (replay.mem.center_of_pressure[]);
+
+					usr.bind (Input.Key.n_plus, (bool on){if (on) width *= 2;});
+					usr.bind (Input.Key.n_minus, (bool on){if (on && width/2 > 2/replay.sampling_frequency) width /= 2;});
+					usr.bind (Input.Key.n, (bool on){if (on) i = min (i+1, paths.length-1); change_video = true;});
+					usr.bind (Input.Key.b, (bool on){if (on) i = max (i-1, 0); change_video = true;});
+
+					scope video = Video.Output (`replay` ~paths[i].find (`_`).until (`.dat`).to!string~ `.avi`, gfx.dimensions[].map!(to!int).vector!2.to!CvSize);
+					scope invideo = Video.Input (`./dat/test.avi`);
+
+					while (timepoint < replay.measure)
+						{/*...}*/
+							import core.thread;
+
+							auto video_box = gfx.extended_bounds[]
+								.scale (0.5)
+								.bounding_box
+								.align_to (Alignment.top_left, gfx.extended_bounds.top_left);
+							
+							gfx.draw (red*orange, video_box[], GeometryMode.t_fan);
+
+							txt.write (`no video`)
+								.inside (video_box)
+								.align_to (Alignment.center)
+								.size (144)
+								.color (black)
+							();
+
+							draw_plate_visualization (
+								replay, timepoint, timepoint + width, 
+								[-0.5.vec, 0.5.vec].bounding_box.align_to (Alignment.top_right, gfx.extended_bounds.top_right),
+								gfx, txt, usr
+							);
+
+							draw_force_plots (
+								replay, 0.ms, replay.measure, 0.ms,
+								[-vec(1, 0.65), vec (1, 0.2)].bounding_box,
+								gfx, txt, usr
+							);
+
+							auto elapsed_x = (2 * (timepoint/replay.measure) - 1.0) * 0.9 + 0.06;
+							gfx.draw ((white*green)(0.5), [vec(elapsed_x, 0), vec(elapsed_x, -1)], GeometryMode.l_strip);
+
+							txt.write (paths[i], ` [`, i+1, `/`, paths.length, `]`)
+								.color (white)
+								.align_to (Alignment.top_right)
+							();
+							txt.write (width/sleep, `x speed`)
+								.color (yellow)
+								.inside (gfx.extended_bounds[].scale (vec(0.85, 0.95)))
+								.align_to (Alignment.top_right)
+							();
+							txt.write (timepoint)
+								.color (paused? red: green)
+								.inside (gfx.extended_bounds[].scale (vec(0.85, 0.9)))
+								.align_to (Alignment.top_right)
+							();
+
+							txt.write (paused? 
+								Unicode.block[`3/8`].repeat (2).to!string
+								: Unicode.arrow[`head`].to!string
+							)
+								.color (paused? red: green)
+								.inside (gfx.extended_bounds[].scale (vec(0.98, 0.95)))
+								.align_to (Alignment.top_right)
+								.size (144)
+								.scale (paused? 0.25: 0.4)
+							();
+
+							gfx.render;
+							usr.process;
+							//Thread.sleep (sleep.to_duration);
+
+							scope img_data = new void[gfx.dimensions[].product.to!size_t * 3];
+							gfx.access_rendering_context ((){
+								gl.ReadPixels (0, 0, gfx.dimensions.x.to!int, gfx.dimensions.y.to!int, PixelFormat.bgr, PixelFormat.unsigned_byte, img_data.ptr);
+							});
+
+							cv.SetData (frame, img_data.ptr, gfx.dimensions.x.to!int * 3);
+							video.put (frame);
+
+							if (terminated)
+								break;
+
+							if (not!paused)
+								timepoint += width;
+
+							timepoint += usr.keys_pressed ([Input.Key.left, Input.Key.right])
+								.zip ([-width, +width])
+								.map!((pressed, increase) => pressed? increase: 0.ms)
+								.sum;
+
+							//timepoint = max (0.ms, min (timepoint, replay.measure - 1/daq.sampling_frequency));
+
+							if (change_video)
+								{/*...}*/
+									change_video = false; 
+									break;
+								}
+						}
+
+					if (terminated)
+						break;
+				}
+		}

@@ -20,6 +20,7 @@ private {/*imports}*/
 		import evx.service;
 		import evx.dsp;
 		import evx.math;
+		import evx.meta;
 	}
 	private {/*nidaqmx}*/
 		import nidaqmx;
@@ -28,6 +29,9 @@ private {/*imports}*/
 	alias round = evx.analysis.round;
 	alias ceil = evx.analysis.ceil;
 	alias seconds = evx.units.seconds;
+
+	alias filter = evx.functional.filter;
+	alias map = evx.functional.map;
 }
 
 final class DAQDevice (Specs...): Service
@@ -211,15 +215,6 @@ final class DAQDevice (Specs...): Service
 						} ~channel_type~ q{_voltage_range = range;
 					});
 				}
-
-			auto reference_mode () const
-				{/*...}*/
-					return _reference_mode;
-				}
-			void reference_mode (ReferenceMode mode)
-				{/*...}*/
-					this._reference_mode = mode;
-				}
 		}
 		pure const {/*time ↔ index}*/
 			uint index_at_time (Seconds t)
@@ -360,9 +355,7 @@ final class DAQDevice (Specs...): Service
 
 			class Input
 				{/*...}*/
-					pure:
-
-					const is_open ()
+					pure const is_open ()
 						{/*...}*/
 							return open;
 						}
@@ -401,6 +394,13 @@ final class DAQDevice (Specs...): Service
 							return sample_at_index (index_at_time (t));
 						}
 
+					mixin Builder!(ReferenceMode, `reference_mode`);
+
+					override string toString () // REFACTOR DRY
+						{/*...}*/
+							return device_id~ `/ai` ~input.countUntil (this).text;
+						}
+
 					private:
 					private {/*data}*/
 						bool open;
@@ -410,9 +410,7 @@ final class DAQDevice (Specs...): Service
 				}
 			class Output
 				{/*...}*/
-					pure:
-
-					const is_open ()
+					pure const is_open ()
 						{/*...}*/
 							return open;
 						}
@@ -454,6 +452,11 @@ final class DAQDevice (Specs...): Service
 							if (period.is_infinite)
 								return generator (t);
 							else return generator (t % period);
+						}
+
+					override string toString () // REFACTOR DRY
+						{/*...}*/
+							return device_id~ `/ao` ~output.countUntil (this).text;
 						}
 
 					public:
@@ -592,14 +595,35 @@ final class DAQDevice (Specs...): Service
 								with (cast()this) {/*...}*/
 									DAQmx.CreateTask (``, &input_task);
 
-									DAQmx.CreateAIVoltageChan (input_task, 
-										channel_string!`input`, ``, 
-										reference_mode,
-										input_voltage_range.min.to!double, 
-										input_voltage_range.max.to!double, 
-										DAQmx_Val_Volts, 
-										null
-									);
+									auto add_channels (R)(R channels)
+										in {/*...}*/
+											assert (channels.all!(c => c.reference_mode == channels.front.reference_mode));
+										}
+										body {/*...}*/
+											if (channels.empty)
+												return;
+
+											else DAQmx.CreateAIVoltageChan (input_task, 
+												channels.map!(to!string).join (`, `).to!string, ``, 
+												channels.front.reference_mode,
+												input_voltage_range.min.to!double, 
+												input_voltage_range.max.to!double, 
+												DAQmx_Val_Volts, 
+												null
+											);
+
+											import std.stdio;
+											channels.map!(to!string).join (`, `).to!string.writeln;
+											channels.map!(c => c.offset).writeln;
+										}
+
+									auto open_channels = input.filter!(c => c.is_open);
+
+											import std.stdio;
+											open_channels.map!(c => c.offset).writeln;
+
+									add_channels (open_channels.filter!(c => c.reference_mode == ReferenceMode.single_ended));
+									add_channels (open_channels.filter!(c => c.reference_mode == ReferenceMode.differential));
 
 									DAQmx.CfgSampClkTiming (input_task, 
 										`OnboardClock`, 
@@ -620,7 +644,7 @@ final class DAQDevice (Specs...): Service
 									DAQmx.CreateTask (``, &output_task);
 
 									DAQmx.CreateAOVoltageChan (output_task, 
-										channel_string!`output`, ``,
+										output.filter!(c => c.is_open).map!(to!string).join (`, `).to!string, ``, 
 										output_voltage_range.min.to!double, 
 										output_voltage_range.max.to!double, 
 										DAQmx_Val_Volts,
@@ -765,6 +789,10 @@ final class DAQDevice (Specs...): Service
 					if (not (buffer_size (in_samples) % block_size (in_samples) == 0))
 						assert (0, `buffer (` ~buffer_size (in_samples).text~ `) not evenly divisible into blocks (` ~block_size (in_samples).text~ `)`);
 
+					foreach (i, channel; input)
+						if (channel.reference_mode == ReferenceMode.differential)
+							assert (input[i + 8].is_open.not);
+
 					parameters_invalidated = false;
 				}
 			void invalidate_parameters ()
@@ -864,7 +892,6 @@ final class DAQDevice (Specs...): Service
 			auto _capture_frequency = 30.hertz;
 			auto _generating_frequency = 30.hertz;
 			auto _generating_period = infinity.seconds;
-			auto _reference_mode = ReferenceMode.differential;
 		}
 		private {/*handles}*/
 			string device_id;
@@ -892,20 +919,6 @@ final class DAQDevice (Specs...): Service
 						
 					initialize!`input`;
 					initialize!`output`;
-				}
-
-			auto channel_string (string channel_type)()
-				if (channel_type == `input` || channel_type == `output`)
-				{/*...}*/
-					string channel_string;
-
-					foreach (i, channel; mixin(channel_type))
-						if (channel.is_open)
-							channel_string ~= device_id~ `/a` ~channel_type[0]~i.text~ `, `;
-
-					if (channel_string.empty)
-						return ``;
-					else return channel_string[0..$-2];
 				}
 		}
 		private {/*buffer}*/

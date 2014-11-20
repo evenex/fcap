@@ -529,7 +529,13 @@ struct Video
 					}
 
 				this (string path)
-					{/*...}*/
+					in {/*...}*/
+						assert (path.exists, path~ ` does not exist`);
+					}
+					out {/*...}*/
+						assert (video, `couldn't open ` ~path);
+					}
+					body {/*...}*/
 						video = cv.CreateFileCapture (path);
 						popFront;
 					}
@@ -557,7 +563,6 @@ struct Video
 					}
 					body {/*...}*/
 						cv.WriteFrame (video, frame);
-						
 					}
 
 				this (string path, CvSize size, Hertz framerate = 30)
@@ -623,7 +628,41 @@ struct Image
 
 		@property size ()
 			{/*...}*/
-				return cv.GetSize (image);
+				if (image is null)
+					return CvSize (0,0);
+				else return cv.GetSize (image);
+			}
+
+		@property data ()
+			{/*...}*/
+				struct _Image 
+					{/*...}*/
+						align (1):
+					  int                  nSize;
+					  int                  ID;
+					  int                  nChannels;
+					  int                  alphaChannel;
+					  int                  depth;
+					  char[4]              colorModel;
+					  char[4]              channelSeq;
+					  int                  dataOrder;
+					  int                  origin;
+					  int                  alignment;
+					  int                  width;
+					  int                  height;
+					  void*     		   roi;
+					  IplImage*    		   maskROI;
+					  void*                imageId;
+					  void*				   tileInfo;
+					  int                  imageSize;
+					  char*                imageData;
+					  int                  widthStep;
+					  int[4]               BorderMode;
+					  int[4]               BorderConst;
+					  char*                imageDataOrigin;
+					}
+
+				return (cast(_Image*)image).imageData;
 			}
 	}
 
@@ -649,22 +688,6 @@ void main ()
 	{/*...}*/
 		auto input_video = Video.Input (`./fcapdata/vid/vladb.mp4`);
 		auto data_file = readText (`./fcapdata/dat/capture_20140901T154831_vlad.dat`).splitLines;
-
-		auto timing_light_activation_time ()
-			{/*...}*/
-				static bool already_ran;
-
-				assert (input_video.is_valid);
-				assert (not (already_ran));
-
-				already_ran = true;
-
-				foreach (frame; input_video)
-					if (frame.color_range_filter (black, blue).accumulate[].sum > 5) // REVIEW
-						return input_video.time;
-
-				assert (0, `couldn't find timing light in video`);
-			}
 
 		{/*process data}*/
 			auto plot_size = CvSize (input_video.size.x, input_video.size.y/2);
